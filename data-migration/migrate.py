@@ -25,7 +25,7 @@ from helpers import (
 DB_URL = os.getenv(
     "DATABASE_URL",
     "postgresql://mgt:mgt_secret@localhost:5432/motogiathinh",
-)
+).replace("postgresql+asyncpg://", "postgresql://")
 
 # Old int id → new UUID
 id_map: dict[str, dict[int, uuid.UUID]] = {

@@ -1,8 +1,16 @@
-.PHONY: deploy logs restart down ps
+.PHONY: bootstrap deploy migrate logs restart down ps
+
+## Provision fresh server: install Docker, unzip, create dirs
+bootstrap:
+	@bash scripts/bootstrap.sh
 
 ## Build frontend locally, zip, upload to VPS, docker up + migrate
 deploy:
 	@bash scripts/deploy.sh
+
+## Upload crawled data + run alembic schema migrations + old-system data migration
+migrate:
+	@bash scripts/migrate.sh
 
 ## Tail all service logs on server (Ctrl+C to exit)
 logs:
