@@ -114,7 +114,8 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     volumes:
-      - vietocr_cache:/root/.vietocr   # persist model weights across rebuilds
+      - vietocr_cache:/root/.vietocr        # VietOCR model weights
+      - pytorch_cache:/root/.cache/torch    # PyTorch VGG19_BN backbone (~548MB)
 
   nginx:
     image: nginx:alpine
@@ -132,3 +133,4 @@ volumes:
   redis_data:
   minio_data:
   vietocr_cache:
+  pytorch_cache:

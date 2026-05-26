@@ -1,16 +1,17 @@
 """
 ocr_service/app.py — VietOCR-powered CCCD extraction microservice.
 
-Pipeline (mirrors kaylode/vietnamese-ocr-toolbox):
-  1. OpenCV preprocessing: grayscale → bilateral denoise → CLAHE → deskew → adaptive threshold
-  2. Tesseract image_to_data for line bounding-box layout detection only
-  3. VietOCR transformer to recognise each cropped line
-  4. Improved CCCD field parser
+Pipeline:
+  1. OpenCV preprocessing: grayscale → bilateral denoise → CLAHE → deskew
+     (NO binary thresholding — modern CCCD has blue background + light text
+      so adaptive threshold inverts and destroys text)
+  2. Tesseract image_to_data on the grayscale image for line layout detection
+  3. VietOCR transformer to recognise each cropped line (grayscale)
+  4. CCCD field parser
 
 Runs on Python 3.11 (VietOCR/PyTorch requirement).
 """
 
-import io
 import re
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -67,74 +68,49 @@ def health():
 
 def _extract(image_bytes: bytes) -> dict:
     pil_img = _preprocess(image_bytes)
+    print(f"OCR: img size={pil_img.size}", flush=True)
     crops = _get_line_crops(pil_img)
+    print(f"OCR: {len(crops)} crops, sizes={[c.size for _,c in crops[:8]]}", flush=True)
     lines = _recognize_lines(crops)
+    print(f"OCR: {len(lines)} lines: {lines[:5]}", flush=True)
+
+    if not lines:
+        # VietOCR found nothing — fall back to Tesseract image_to_string
+        print("OCR: Tesseract fallback", flush=True)
+        raw = pytesseract.image_to_string(pil_img, lang="vie")
+        print(f"OCR: Tesseract raw={repr(raw[:400])}", flush=True)
+        lines = [l.strip() for l in raw.split("\n") if l.strip()]
+
     return _parse_cccd(lines)
 
 
 def _preprocess(image_bytes: bytes) -> Image.Image:
-    """Grayscale → bilateral denoise → CLAHE contrast → deskew → adaptive threshold."""
+    """Resize to ≤1200px wide then convert to grayscale.
+
+    No bilateral filter, no CLAHE, no deskew — those steps were
+    distorting the image (deskew finds wrong contour on blue-background
+    CCCD and rotates the card, destroying all text for Tesseract/VietOCR).
+    Tesseract applies its own internal Otsu threshold; VietOCR is a neural
+    net that handles grayscale natively.
+    """
     nparr = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-    # Grayscale
+    h, w = img.shape[:2]
+    if w > 1200:
+        scale = 1200 / w
+        img = cv2.resize(img, (1200, int(h * scale)), interpolation=cv2.INTER_AREA)
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # Bilateral filter (removes noise while preserving edges)
-    denoised = cv2.bilateralFilter(gray, 9, 75, 75)
-
-    # CLAHE — adaptive histogram equalisation for contrast
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(denoised)
-
-    # Deskew
-    deskewed = _deskew(enhanced)
-
-    # Adaptive threshold → binary image for both Tesseract layout and OCR
-    binary = cv2.adaptiveThreshold(
-        deskewed, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        31, 11,
-    )
-
-    return Image.fromarray(binary)
-
-
-def _deskew(gray: np.ndarray) -> np.ndarray:
-    """Correct image rotation using minAreaRect on large foreground contours."""
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return gray
-
-    # Use the largest contour for angle estimation
-    largest = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(largest) < 500:
-        return gray
-
-    rect = cv2.minAreaRect(largest)
-    angle = rect[-1]
-
-    # Normalise angle to [-45, 45]
-    if angle < -45:
-        angle += 90
-    if abs(angle) < 1.0:  # skip tiny corrections
-        return gray
-
-    h, w = gray.shape
-    center = (w // 2, h // 2)
-    M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated = cv2.warpAffine(gray, M, (w, h), flags=cv2.INTER_CUBIC,
-                              borderMode=cv2.BORDER_REPLICATE)
-    return rotated
+    return Image.fromarray(gray)
 
 
 def _get_line_crops(pil_img: Image.Image) -> list[tuple[int, Image.Image]]:
     """
     Return list of (y_top, cropped_line_image) sorted by vertical position.
-    Uses Tesseract image_to_data for layout detection, falls back to
-    horizontal projection if Tesseract finds no lines.
+    Uses Tesseract image_to_data on the grayscale image for layout detection
+    (Tesseract applies its own internal Otsu threshold).
+    Falls back to row-variance projection if Tesseract finds nothing.
     """
     try:
         data = pytesseract.image_to_data(pil_img, lang="vie", output_type=Output.DICT)
@@ -162,8 +138,7 @@ def _get_line_crops(pil_img: Image.Image) -> list[tuple[int, Image.Image]]:
             y2 = min(img_h, max(y + h for y, h in zip(ys, hs)) + 4)
             if x2 - x1 < 20 or y2 - y1 < 6:
                 continue
-            crop = pil_img.crop((x1, y1, x2, y2))
-            crops.append((y1, crop))
+            crops.append((y1, pil_img.crop((x1, y1, x2, y2))))
 
         if crops:
             crops.sort(key=lambda t: t[0])
@@ -171,26 +146,26 @@ def _get_line_crops(pil_img: Image.Image) -> list[tuple[int, Image.Image]]:
     except Exception:
         pass
 
-    # Fallback: horizontal projection profile to split lines
     return _projection_crops(pil_img)
 
 
 def _projection_crops(pil_img: Image.Image) -> list[tuple[int, Image.Image]]:
-    """Segment lines using horizontal projection when Tesseract layout fails."""
-    arr = np.array(pil_img)
-    # For binary image: white text on white = count black pixels per row
-    row_sum = np.sum(arr < 128, axis=1)
-    in_line = False
-    start = 0
+    """Slice the image into fixed-height strips.
+
+    When Tesseract layout detection fails completely, we fall back to
+    naive horizontal slicing. VietOCR handles variable-width line images
+    so each strip is a valid input even if it contains blank space.
+    """
+    w, h = pil_img.size
+    strip_h = 45   # ~line height in a phone photo of a CCCD at 1200px wide
+    overlap = 8
     crops = []
-    for y, val in enumerate(row_sum):
-        if val > 3 and not in_line:
-            in_line = True
-            start = y
-        elif val <= 3 and in_line:
-            in_line = False
-            if y - start > 6:
-                crops.append((start, pil_img.crop((0, max(0, start - 2), pil_img.width, y + 2))))
+    y = 0
+    while y < h:
+        y2 = min(y + strip_h, h)
+        if y2 - y > 10:
+            crops.append((y, pil_img.crop((0, y, w, y2))))
+        y += strip_h - overlap
     return crops
 
 
@@ -235,7 +210,6 @@ def _parse_cccd(lines: list[str]) -> dict:
 
     full_text = " ".join(_clean(l) for l in lines)
 
-    # CCCD / CMND number: 9 or 12 consecutive digits
     id_match = re.search(r"\b(\d{12}|\d{9})\b", full_text)
     if id_match:
         result["cccd_number"] = id_match.group(1)
@@ -246,31 +220,27 @@ def _parse_cccd(lines: list[str]) -> dict:
         line = _clean(raw_line)
         upper = line.upper()
 
-        # Full name
         if not result["full_name"] and re.search(r"H[ỌO].*T[ÊE]N|HO.*TEN", upper):
-            after = re.split(r"[:/]\s*", line, maxsplit=1)
+            after = re.split(r":\s*", line, maxsplit=1)
             candidate = after[1].strip() if len(after) > 1 and after[1].strip() else ""
             if not candidate and i + 1 < len(lines):
                 candidate = _clean(lines[i + 1])
-            if candidate and not re.search(r"\d{4}", candidate):
+            if candidate and not re.search(r"\d{4}", candidate) and not re.search(r"full name|date|birth|sex|place", candidate, re.I):
                 result["full_name"] = candidate
 
-        # Date of birth
         if not result["date_of_birth"] and re.search(r"NG[ÀA]Y.*SINH|SINH", upper):
             m = re.search(r"(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{4})", line)
             if m:
                 result["date_of_birth"] = _normalize_date(m.group(1))
 
-        # Gender
         if not result["gender"] and re.search(r"GI[ỚO]I.*T[ÍI]NH|GIOI.*TINH", upper):
             if re.search(r"\bNAM\b", upper):
                 result["gender"] = "male"
             elif re.search(r"N[Ữ\s]|NỮ|NU\b", upper):
                 result["gender"] = "female"
 
-        # Address — multi-line aware
         if not result["address"] and re.search(r"TH[ƯU][ỜO]NG.*TR[ÚU]|N[ƠO]I.*TR[ÚU]|THUONG.*TRU", upper):
-            after = re.split(r"[:/]\s*", line, maxsplit=1)
+            after = re.split(r":\s*", line, maxsplit=1)
             addr = after[1].strip() if len(after) > 1 else ""
             if (not addr or len(addr) < 20) and i + 1 < len(lines):
                 addr = (addr + " " + _clean(lines[i + 1])).strip()
@@ -278,21 +248,18 @@ def _parse_cccd(lines: list[str]) -> dict:
                 addr = (addr + " " + _clean(lines[i + 2])).strip()
             result["address"] = addr or None
 
-        # Issued date — "Ngày cấp" or "Ngày, tháng, năm"
         if not result["issued_date"] and re.search(r"NG[ÀA]Y.*C[ẤA]P|NGAY.*CAP", upper):
             m = re.search(r"(\d{1,2}[/\-\.]\d{1,2}[/\-\.]\d{4})", line)
             if m:
                 result["issued_date"] = _normalize_date(m.group(1))
 
-        # Issued place — "Nơi cấp"
         if not result["issued_place"] and re.search(r"N[ƠO]I.*C[ẤA]P|NOI.*CAP", upper):
-            after = re.split(r"[:/]\s*", line, maxsplit=1)
+            after = re.split(r":\s*", line, maxsplit=1)
             place = after[1].strip() if len(after) > 1 and after[1].strip() else ""
             if not place and i + 1 < len(lines):
                 place = _clean(lines[i + 1])
             result["issued_place"] = place or None
 
-    # Heuristic date assignment from all dates found
     if dates:
         if not result["date_of_birth"]:
             result["date_of_birth"] = _normalize_date(dates[0])

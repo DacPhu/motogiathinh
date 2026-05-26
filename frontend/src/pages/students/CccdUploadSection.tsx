@@ -50,6 +50,25 @@ const CccdUploadSection: React.FC<Props> = ({ form, onFilesReady }) => {
     }
   }
 
+  const parseVietnameseAddress = (address: string) => {
+    const parts = address.split(/,\s*/).map(p => p.trim()).filter(Boolean)
+    if (parts.length >= 4) {
+      return {
+        dia_chi:    parts.slice(0, parts.length - 3).join(', '),
+        phuong_xa:  parts[parts.length - 3],
+        quan_huyen: parts[parts.length - 2],
+        tinh_thanh: parts[parts.length - 1],
+      }
+    }
+    if (parts.length === 3) {
+      return { dia_chi: parts[0], phuong_xa: parts[1], quan_huyen: parts[2], tinh_thanh: undefined }
+    }
+    if (parts.length === 2) {
+      return { dia_chi: parts[0], phuong_xa: undefined, quan_huyen: parts[1], tinh_thanh: undefined }
+    }
+    return { dia_chi: address, phuong_xa: undefined, quan_huyen: undefined, tinh_thanh: undefined }
+  }
+
   const applyOcr = () => {
     if (!ocrResult) return
     const values: Record<string, any> = {}
@@ -57,7 +76,13 @@ const CccdUploadSection: React.FC<Props> = ({ form, onFilesReady }) => {
     if (ocrResult.full_name) values.ten_hoc_vien = ocrResult.full_name
     if (ocrResult.date_of_birth) values.ngay_sinh = dayjs(ocrResult.date_of_birth)
     if (ocrResult.gender) values.gioi_tinh = ocrResult.gender
-    if (ocrResult.address) values.dia_chi = ocrResult.address
+    if (ocrResult.address) {
+      const addr = parseVietnameseAddress(ocrResult.address)
+      if (addr.dia_chi)    values.dia_chi    = addr.dia_chi
+      if (addr.phuong_xa)  values.phuong_xa  = addr.phuong_xa
+      if (addr.quan_huyen) values.quan_huyen = addr.quan_huyen
+      if (addr.tinh_thanh) values.tinh_thanh = addr.tinh_thanh
+    }
     if (ocrResult.issued_date) values.cccd_issued_date = dayjs(ocrResult.issued_date)
     if (ocrResult.issued_place) values.cccd_issued_place = ocrResult.issued_place
     form.setFieldsValue(values)
