@@ -2,13 +2,13 @@
 
 import uuid
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.fee_plan import FeePlan
 
 router = APIRouter(prefix="/fee-plans", tags=["fee-plans"])
@@ -46,7 +46,6 @@ async def create_fee_plan(
     data: FeePlanCreate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("fee_plans", "create"))] = None,
 ):
     if data.licence not in ("A", "A1"): raise HTTPException(400, "invalid_licence")
     f = FeePlan(name=data.name, licence=data.licence, amount=Decimal(data.amount))
@@ -62,7 +61,6 @@ async def update_fee_plan(
     data: FeePlanUpdate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("fee_plans", "update"))] = None,
 ):
     try: u = uuid.UUID(fee_plan_id)
     except ValueError: raise HTTPException(400, "invalid_id")

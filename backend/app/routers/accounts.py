@@ -9,15 +9,17 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import func, select
 
 from app.core.security import hash_password
-from app.dependencies import ALL_RESOURCES, DB, AdminUser, CurrentUser, first_branch_slug, resolve_branch_slugs
+from app.dependencies import DB, AdminUser, CurrentUser, first_branch_slug, resolve_branch_slugs
 from app.models.branch import Branch
+from app.models.class_model import Class
 from app.models.enums import RoleName
 from app.models.user import User
-from app.models.user_permission import UserPermission
 from app.schemas.auth import WireUser
 from app.services.audit_service import log_action
 
 router = APIRouter(prefix="/accounts", tags=["accounts"])
+
+ROLES_ALLOWED = ("admin", "staff", "guest")
 
 
 @router.get("")
@@ -56,6 +58,14 @@ async def _branch_uuid_from_slug(db, s: Optional[str]) -> Optional[uuid.UUID]:
     return b.id if b else None
 
 
+async def _class_uuid_from_str(db, s: Optional[str]) -> Optional[uuid.UUID]:
+    if not s: return None
+    try: u = uuid.UUID(s)
+    except ValueError: return None
+    c = await db.get(Class, u)
+    return c.id if c else None
+
+
 class AccountCreate(BaseModel):
     name: str
     role: str = "staff"
@@ -63,6 +73,7 @@ class AccountCreate(BaseModel):
     branchId: Optional[str] = None
     phone: Optional[str] = None
     password: str
+    assignedClassId: Optional[str] = None
 
 
 class AccountUpdate(BaseModel):
@@ -72,17 +83,18 @@ class AccountUpdate(BaseModel):
     phone: Optional[str] = None
     email: Optional[EmailStr] = None
     active: Optional[bool] = None
+    assignedClassId: Optional[str] = None
 
 
 @router.post("", status_code=201)
 async def create_account(data: AccountCreate, current_user: AdminUser, db: DB):
-    if data.role not in ("admin", "staff"):
+    if data.role not in ROLES_ALLOWED:
         raise HTTPException(400, "invalid_role")
-    # Ensure email is unique
     exists = await db.execute(select(User).where(User.email == data.email))
     if exists.scalar_one_or_none():
         raise HTTPException(409, "duplicate_email")
     branch_uuid = await _branch_uuid_from_slug(db, data.branchId)
+    assigned_class_uuid = await _class_uuid_from_str(db, data.assignedClassId)
     u = User(
         email=data.email,
         password_hash=hash_password(data.password),
@@ -90,6 +102,7 @@ async def create_account(data: AccountCreate, current_user: AdminUser, db: DB):
         phone=data.phone,
         role=RoleName(data.role),
         branch_id=branch_uuid,
+        assigned_class_id=assigned_class_uuid,
         is_active=True,
     )
     db.add(u)
@@ -109,10 +122,12 @@ async def update_account(user_id: str, data: AccountUpdate, current_user: AdminU
     if "name" in fields:  u.full_name = fields["name"]
     if "phone" in fields: u.phone = fields["phone"]
     if "email" in fields: u.email = fields["email"]
-    if "role" in fields and fields["role"] in ("admin", "staff"):
+    if "role" in fields and fields["role"] in ROLES_ALLOWED:
         u.role = RoleName(fields["role"])
     if "branchId" in fields:
         u.branch_id = await _branch_uuid_from_slug(db, fields["branchId"])
+    if "assignedClassId" in fields:
+        u.assigned_class_id = await _class_uuid_from_str(db, fields["assignedClassId"])
     if "active" in fields:
         u.is_active = bool(fields["active"])
     await db.commit()
@@ -178,118 +193,3 @@ async def delete_account(user_id: str, current_user: AdminUser, db: DB):
     )
     await db.commit()
     return {"ok": True, "id": str(u.id)}
-
-
-# ---------------------------------------------------------------------------
-# Per-staff permission editing
-# ---------------------------------------------------------------------------
-
-class CrudFlags(BaseModel):
-    c: bool = True
-    r: bool = True
-    u: bool = True
-    d: bool = True
-
-
-class PermissionsUpdate(BaseModel):
-    students: CrudFlags = CrudFlags()
-    payments: CrudFlags = CrudFlags()
-    classes: CrudFlags = CrudFlags()
-    branches: CrudFlags = CrudFlags()
-    accounts: CrudFlags = CrudFlags()
-    vehicles: CrudFlags = CrudFlags()
-    teachers: CrudFlags = CrudFlags()
-    fee_plans: CrudFlags = CrudFlags()
-    promotions: CrudFlags = CrudFlags()
-    activity_log: CrudFlags = CrudFlags()
-
-
-def _perms_to_wire(rows: list[UserPermission]) -> dict:
-    by_res = {r.resource: r for r in rows}
-    out = {}
-    for res in ALL_RESOURCES:
-        row = by_res.get(res)
-        out[res] = {
-            "c": bool(row.can_create) if row else False,
-            "r": bool(row.can_read)   if row else False,
-            "u": bool(row.can_update) if row else False,
-            "d": bool(row.can_delete) if row else False,
-        }
-    return out
-
-
-@router.get("/{user_id}/permissions")
-async def get_user_permissions(user_id: str, current_user: AdminUser, db: DB):
-    try: u_uuid = uuid.UUID(user_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    u = await db.get(User, u_uuid)
-    if not u: raise HTTPException(404, "account_not_found")
-    if u.role == RoleName.admin:
-        # Admin bypasses checks; surface a synthetic all-true map for symmetry.
-        return {res: {"c": True, "r": True, "u": True, "d": True} for res in ALL_RESOURCES}
-    result = await db.execute(
-        select(UserPermission).where(
-            UserPermission.user_id == u_uuid,
-            UserPermission.deleted_at.is_(None),
-        )
-    )
-    return _perms_to_wire(list(result.scalars().all()))
-
-
-@router.put("/{user_id}/permissions")
-async def put_user_permissions(
-    user_id: str,
-    data: PermissionsUpdate,
-    current_user: AdminUser,
-    db: DB,
-):
-    try: u_uuid = uuid.UUID(user_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    u = await db.get(User, u_uuid)
-    if not u: raise HTTPException(404, "account_not_found")
-    if u.role == RoleName.admin:
-        raise HTTPException(400, "cannot_edit_admin_permissions")
-
-    payload = data.model_dump()
-
-    existing = await db.execute(
-        select(UserPermission).where(
-            UserPermission.user_id == u_uuid,
-            UserPermission.deleted_at.is_(None),
-        )
-    )
-    by_res = {r.resource: r for r in existing.scalars().all()}
-    old_snapshot = _perms_to_wire(list(by_res.values()))
-
-    for res in ALL_RESOURCES:
-        flags = payload[res]
-        row = by_res.get(res)
-        if row is None:
-            row = UserPermission(user_id=u_uuid, resource=res)
-            db.add(row)
-        row.can_create = bool(flags["c"]); row.can_read = bool(flags["r"])
-        row.can_update = bool(flags["u"]); row.can_delete = bool(flags["d"])
-
-    await db.flush()
-    refreshed = await db.execute(
-        select(UserPermission).where(
-            UserPermission.user_id == u_uuid,
-            UserPermission.deleted_at.is_(None),
-        )
-    )
-    new_rows = list(refreshed.scalars().all())
-    new_snapshot = _perms_to_wire(new_rows)
-
-    await log_action(
-        db,
-        user_id=current_user.id,
-        branch_id=current_user.branch_id,
-        user_role=current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role),
-        action="accounts.permissions.update",
-        resource="accounts",
-        resource_id=u_uuid,
-        old_values=old_snapshot,
-        new_values=new_snapshot,
-    )
-    await db.commit()
-    return new_snapshot

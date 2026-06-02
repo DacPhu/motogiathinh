@@ -4,13 +4,13 @@ student / account / teacher / vehicle references the branch).
 """
 
 import uuid
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.branch import Branch
 from app.models.class_model import Class
 from app.models.enums import RoleName
@@ -73,7 +73,6 @@ async def create_branch(
     data: BranchCreate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("branches", "create"))] = None,
 ):
     res = await db.execute(select(Branch))
     existing = list(res.scalars().all())
@@ -109,7 +108,6 @@ async def update_branch(
     data: BranchUpdate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("branches", "update"))] = None,
 ):
     b = await _resolve(db, branch_id)
     if not b: raise HTTPException(404, "branch_not_found")
@@ -129,7 +127,6 @@ async def delete_branch(
     branch_id: str,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("branches", "delete"))] = None,
 ):
     b = await _resolve(db, branch_id)
     if not b: raise HTTPException(404, "branch_not_found")

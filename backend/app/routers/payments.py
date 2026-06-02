@@ -3,14 +3,14 @@
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.storage import upload_bytes
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.branch import Branch
 from app.models.enums import PaymentMethod, PaymentStatus, RoleName
 from app.models.payment import Payment
@@ -76,7 +76,6 @@ async def create_payment(
     data: PaymentCreate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("payments", "create"))] = None,
 ):
     try: s_uuid = uuid.UUID(data.studentId)
     except ValueError: raise HTTPException(400, "invalid_studentId")
@@ -135,7 +134,6 @@ async def upload_bien_lai(
     file: UploadFile = File(...),
     current_user: CurrentUser = None,
     db: DB = None,
-    _perm: Annotated[None, Depends(require_permission("payments", "update"))] = None,
 ):
     try: p_uuid = uuid.UUID(payment_id)
     except ValueError: raise HTTPException(400, "invalid_id")

@@ -9,7 +9,6 @@ from app.core.security import decode_token
 from app.database.session import get_db
 from app.models.enums import RoleName
 from app.models.user import User
-from app.models.user_permission import UserPermission
 
 SESSION_COOKIE = "mgt_session"
 
@@ -90,59 +89,10 @@ async def first_branch_slug(db: AsyncSession) -> Optional[str]:
     return (first.slug if first and first.slug else (str(first.id) if first else None))
 
 
+def is_guest(user: User) -> bool:
+    return user.role == RoleName.guest
+
+
 CurrentUser = Annotated[User, Depends(get_current_user)]
 AdminUser = Annotated[User, Depends(require_admin)]
 DB = Annotated[AsyncSession, Depends(get_db)]
-
-
-# ---------------------------------------------------------------------------
-# Permission system
-# ---------------------------------------------------------------------------
-
-ALL_RESOURCES = (
-    "students", "payments", "classes", "branches", "accounts",
-    "vehicles", "teachers", "fee_plans", "promotions", "activity_log",
-)
-
-
-async def load_permissions(
-    db: Annotated[AsyncSession, Depends(get_db)],
-    user: Annotated[User, Depends(get_current_user)],
-) -> dict[str, dict[str, bool]]:
-    """Per-request {resource: {c, r, u, d}} map. Admin → synthetic all-true.
-    Staff → loaded from user_permissions; missing rows default to all-false."""
-    if user.role == RoleName.admin:
-        return {res: {"c": True, "r": True, "u": True, "d": True} for res in ALL_RESOURCES}
-    out = {res: {"c": False, "r": False, "u": False, "d": False} for res in ALL_RESOURCES}
-    result = await db.execute(
-        select(UserPermission).where(
-            UserPermission.user_id == user.id,
-            UserPermission.deleted_at.is_(None),
-        )
-    )
-    for row in result.scalars().all():
-        if row.resource in out:
-            out[row.resource] = {
-                "c": row.can_create, "r": row.can_read,
-                "u": row.can_update, "d": row.can_delete,
-            }
-    return out
-
-
-PermissionMap = Annotated[dict[str, dict[str, bool]], Depends(load_permissions)]
-
-
-def require_permission(resource: str, verb: str):
-    """Dependency factory. verb in {'create','read','update','delete'}."""
-    if verb not in ("create", "read", "update", "delete"):
-        raise ValueError(f"unknown verb {verb}")
-    short = verb[0]
-
-    async def _dep(perms: PermissionMap) -> None:
-        if not perms.get(resource, {}).get(short, False):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"permission_denied:{resource}.{verb}",
-            )
-
-    return _dep

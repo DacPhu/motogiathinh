@@ -1,8 +1,13 @@
+# DEPRECATED — sibling 2026-06 contract has no RBAC.
+# Table + model kept on disk for reversibility; the back_populates link to
+# User.permissions was removed (User no longer declares the relationship),
+# so this model is now a leaf with no reverse relationship. No router reads
+# from it.
 import uuid
 
 from sqlalchemy import Boolean, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import BaseModel
 
@@ -22,5 +27,3 @@ class UserPermission(BaseModel):
     can_read: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     can_update: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     can_delete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-    user: Mapped["User"] = relationship("User", back_populates="permissions")  # noqa: F821

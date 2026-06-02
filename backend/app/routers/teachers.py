@@ -8,13 +8,13 @@ then teachers via the existing /api/admin pathway if needed.
 
 import uuid
 from datetime import datetime, timezone
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.branch import Branch
 from app.models.instructor import Instructor
 
@@ -62,10 +62,7 @@ class TeacherUpdate(BaseModel):
 
 
 @router.post("", status_code=501)
-async def create_teacher(
-    current_user: CurrentUser,
-    _perm: Annotated[None, Depends(require_permission("teachers", "create"))] = None,
-):
+async def create_teacher(current_user: CurrentUser):
     raise HTTPException(501, "create_teacher_unsupported_use_admin_pathway")
 
 
@@ -75,7 +72,6 @@ async def update_teacher(
     data: TeacherUpdate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("teachers", "update"))] = None,
 ):
     try: u = uuid.UUID(teacher_id)
     except ValueError: raise HTTPException(400, "invalid_id")

@@ -1,11 +1,9 @@
 """GET /api/activity-log — flat list, wire-shaped from audit_logs."""
 
-from typing import Annotated
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.enums import RoleName
 from app.models.notification import AuditLog
 from app.utils.dates import iso_to_vn_datetime
@@ -27,7 +25,6 @@ def _to_wire(a: AuditLog) -> dict:
 async def list_activity_log(
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("activity_log", "read"))] = None,
 ):
     query = (
         select(AuditLog)

@@ -26,12 +26,13 @@ class ChangePasswordRequest(BaseModel):
 class WireUser(BaseModel):
     id: str
     name: str
-    role: str  # "admin" | "staff"
+    role: str  # "admin" | "staff" | "guest"
     branchId: Optional[str]
     email: str
     phone: Optional[str]
     lastActive: Optional[str]  # "dd/mm/yyyy HH:MM:SS"
     active: bool
+    assignedClassId: Optional[str] = None  # guest kiosk: the class the operator runs against
 
     @classmethod
     def from_user(cls, u: User, branch_id_override: Optional[str] = None) -> "WireUser":
@@ -57,6 +58,7 @@ class WireUser(BaseModel):
             phone=u.phone,
             lastActive=iso_to_vn_datetime(u.last_login_at),
             active=u.is_active,
+            assignedClassId=str(u.assigned_class_id) if getattr(u, "assigned_class_id", None) else None,
         )
 
 

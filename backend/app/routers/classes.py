@@ -5,13 +5,13 @@ Wire shape uses English field names + dd/mm/yyyy dates.
 
 import uuid
 from datetime import date
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.branch import Branch
 from app.models.class_model import Class, ClassEnrollment
 from app.models.course import CourseType
@@ -68,8 +68,12 @@ async def _branch_id_from_slug(db, slug_or_uuid: str) -> Optional[uuid.UUID]:
 @router.get("")
 async def list_classes(current_user: CurrentUser, db: DB):
     query = select(Class).where(Class.deleted_at.is_(None)).order_by(Class.ngay_khai_giang.desc())
-    if current_user.role != RoleName.admin and current_user.branch_id:
+    if current_user.role == RoleName.staff and current_user.branch_id:
         query = query.where(Class.branch_id == current_user.branch_id)
+    elif current_user.role == RoleName.guest:
+        if not current_user.assigned_class_id:
+            return []
+        query = query.where(Class.id == current_user.assigned_class_id)
     result = await db.execute(query)
     slug_map = await _slug_map(db)
     return [_to_wire(c, slug_map) for c in result.scalars().all()]
@@ -116,7 +120,6 @@ async def create_class(
     data: ClassCreateRequest,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("classes", "create"))] = None,
 ):
     branch_uuid = await _branch_id_from_slug(db, data.branchId)
     if not branch_uuid: raise HTTPException(400, "invalid_branchId")
@@ -147,7 +150,6 @@ async def update_class(
     data: ClassUpdateRequest,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("classes", "update"))] = None,
 ):
     try: c_uuid = uuid.UUID(class_id)
     except ValueError: raise HTTPException(400, "invalid_id")

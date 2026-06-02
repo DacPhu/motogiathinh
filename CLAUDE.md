@@ -19,17 +19,23 @@ docker compose up -d                                # start db, redis, minio, ba
 docker compose exec backend alembic upgrade head    # schema migrations
 docker compose build backend frontend ocr           # rebuild after code changes
 docker compose logs -f backend                      # tail backend
+docker compose exec backend python /app/scripts/create_admin.py   # admin@motogiathinh.vn / admin123
+docker compose exec backend python /app/scripts/create_guest.py   # guest kiosk user, assigns latest class
 make migrate                                        # upload crawled data + run alembic + migrate.py on server
 make deploy / deploy-staging                        # rsync + docker up on VPS
+make create-admin                                   # override admin password on the VPS
+make logs / ps / ssh / restart                      # all have -staging twins
+make backup                                         # pg_dump prod DB to /opt/backups/<ts>.sql.gz
+make seed-mock                                      # ⚠️ WIPES prod and seeds sibling mock data (runs `backup` first; requires typing YES)
 ```
 
-Entrypoints (local): frontend `:3000` (direct) or `:8080` (top-level nginx). API docs at `:8000/api/docs`. MinIO console `:9001`.
+Entrypoints (local): frontend `:3000` (direct) or `:8080` (top-level nginx). API docs at `:8000/api/docs`. MinIO console `:9001`. Note: `README.md` is stale (mentions `/api/v1` and port 80) — this file is authoritative.
 
 ## Architecture rules
 
 - **Single API surface:** `/api/*`. There is no `/api/v1/*` anymore. The frontend is a static bundle of `.jsx` + `.css` + fonts; the backend serves the JSON shape documented in `motogiathinh2905-devandprod/motogiathinh-design-system-template/project/BACKEND.md`.
 - **Auth:** HttpOnly cookie `mgt_session` (JWT inside, 14-day TTL). No Bearer header; no refresh tokens. `dependencies.get_current_user` reads the cookie. Login (`POST /api/auth/login`) returns `{user}` and sets the cookie. Logout clears it.
-- **Two roles:** `admin` (branch_id NULL) and `staff` (branch_id set). Admin endpoints depend on `AdminUser`. Branch scoping for staff is one helper: `scope_to_branch(user)` returns the branch UUID for staff, None for admin. There is no `UserPermission` table.
+- **Three roles:** `admin` (branch_id NULL, sees everything), `staff` (branch_id set, sees own branch), `guest` (assigned_class_id set, kiosk operator, sees only their own students). Admin endpoints depend on `AdminUser`. Branch scoping for staff is `scope_to_branch(user)`; guests are scoped by `responsible_staff_id == current_user.id` on `/students`, by `assigned_class_id` on `/classes`, and self-only on `/accounts`. No RBAC: the `UserPermission` model + `user_permissions` table are left on disk dormant (table not read by any router); the legacy `require_permission(resource, verb)` factory was removed.
 - **Branch IDs on the wire are slugs**, not UUIDs. `branches.slug` (`br-1`, `br-2`, `br-3`) is assigned by the alembic migration in `created_at` order. Wire shapes resolve UUIDs to slugs via `resolve_branch_slug(s)`. Admin's null-branch resolves to the synthetic `admin-all` sentinel.
 - **Wire shape ≠ DB shape.** DB columns stay Vietnamese (`ten_hoc_vien`, `ngay_sinh`, `loai_bang_lai`); each router has a `_to_wire(row)` mapper that renames to English + formats dates as `dd/mm/yyyy[ HH:MM:SS]` + collapses the 8-class license enum to A/A1. Helpers live in `app/utils/dates.py`.
 - **Payments are immutable:** no UPDATE/DELETE. Corrections are compensating negative-amount entries. Payments have `kind ∈ {tuition, rental}`; rentals carry `vehicle_id` + `rental_rounds`.
@@ -43,15 +49,16 @@ Entrypoints (local): frontend `:3000` (direct) or `:8080` (top-level nginx). API
 main.py              — FastAPI app, mounts all routers under /api
 config.py            — pydantic-settings
 celery_app.py        — Celery + beat schedule
-dependencies.py      — get_current_user (cookie), require_admin, scope_to_branch, resolve_branch_slug(s)
+dependencies.py      — get_current_user (cookie), require_admin, scope_to_branch, resolve_branch_slug(s), is_guest
 database/base.py     — BaseModel (UUID pk + TimestampMixin + SoftDeleteMixin)
 core/
   security.py        — JWT (jose) + bcrypt + create_session_token / decode_token
   cache.py           — Redis wrapper + CacheKeys (some keys dead since RBAC removal — cleanup pending)
   storage.py         — MinIO upload_file / upload_bytes / get_object_bytes / delete_file
   ocr.py             — Google Vision → ocr microservice fallback
-models/              — SQLAlchemy ORM (Vietnamese column names underneath the English wire)
-schemas/auth.py      — WireUser, LoginRequest/Response (only auth schemas remain)
+models/              — SQLAlchemy ORM (Vietnamese column names underneath the English wire).
+                       user_permission.py is marked DEPRECATED; table kept on disk for reversibility.
+schemas/auth.py      — WireUser (includes assignedClassId for guest kiosk), LoginRequest/Response
 schemas/common.py    — PaginatedResponse (deprecated; not used by new routes)
 services/
   audit_service.py   — log_action() helper (called by mutation routes)
@@ -59,8 +66,14 @@ services/
 routers/             — auth, me, branches, accounts, classes, students, payments, fee_plans,
                        promotions, teachers, vehicles, notifications, activity_log,
                        constants, files, ocr, reports
+scripts/             — create_admin.py (admin@motogiathinh.vn/admin123),
+                       create_guest.py (guest@motogiathinh.vn/guest123, assigns latest class),
+                       seed_staging.py (mock data for staging VPS)
 tasks/notifications.py — Celery jobs: session/payment/exam reminders + auto-notif heartbeat
-utils/               — id_generator (HV/BL/GD sequences via Redis INCR), dates (iso↔vn helpers)
+utils/               — id_generator (HV/BL/GD sequences via Redis INCR),
+                       dates (iso↔vn helpers + license/gender/method to_wire/to_db),
+                       validators (validate_vietnam_phone, validate_cccd, validate_email, normalize_phone)
+tests/               — empty (no test command yet)
 ```
 
 ## Conventions
@@ -69,7 +82,7 @@ utils/               — id_generator (HV/BL/GD sequences via Redis INCR), dates
 - Vietnamese DB columns translate at API edge via the `_to_wire(row, slug_map)` helper pattern in every router. Branch UUIDs always map through `slug_map` so the wire `branchId` is `br-1`/`br-2`/`br-3` or `admin-all`.
 - `dates.py` exports `iso_to_vn_date`, `iso_to_vn_datetime`, `vn_to_iso_date`, `license_to_wire/db`, `gender_to_wire/db`, `method_to_wire/db`.
 - IDs: PostgreSQL UUIDs internally; on the wire UUIDs are opaque strings except `branch.id` (slug). Display codes like `HV2024001` and `BL-2026-0001` are generated via `utils/id_generator.py` (Redis INCR).
-- 400-line max per file. The biggest router after Phase 5 is `routers/students.py` (~270 lines) which contains the doc upload routes too.
+- 400-line max per file. `routers/students.py` is the largest (≈400 lines) — it contains the create/update/doc-upload/doc-delete routes including the guest-kiosk path.
 - `Annotated[..., Depends()]` vs `= Depends()` — pick one form per parameter, don't mix.
 
 ## Docker
@@ -105,7 +118,8 @@ utils/               — id_generator (HV/BL/GD sequences via Redis INCR), dates
 
 ## Local testing
 
-- Login: `admin@motogiathinh.vn` / `admin123`
+- Admin: `admin@motogiathinh.vn` / `admin123` (seed via `docker compose exec backend python /app/scripts/create_admin.py`)
+- Guest: `guest@motogiathinh.vn` / `guest123` (seed via `docker compose exec backend python /app/scripts/create_guest.py`; picks the most-recently-created class)
 - Frontend: `http://localhost:3000`
 - API docs: `http://localhost:8000/api/docs`
 
@@ -121,3 +135,4 @@ utils/               — id_generator (HV/BL/GD sequences via Redis INCR), dates
 - **The OCR parser lives in two places** (`backend/app/core/ocr.py` and `ocr_service/app.py`) — mirror parser changes.
 - **Audit logs don't commit themselves** — `log_action()` adds to the session; the caller must `db.commit()`.
 - **Notifications recompute is a stub.** Real auto-* upsert needs a `severity` column on notifications + nullable user_id (model tracks per-user delivery, sibling treats them as system-wide); follow-up alembic migration pending.
+- **`WireUser.assignedClassId` is load-bearing for the guest kiosk.** `screen-guest.jsx:581` reads it to render the footer class chip; `screen-org.jsx:332` reads it to render the "Lớp được giao" select when editing a guest account. Drop it from `schemas/auth.py:WireUser` and the kiosk breaks silently (no chip, no class context).

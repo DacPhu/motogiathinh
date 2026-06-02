@@ -2,13 +2,13 @@
 
 import uuid
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.promotion import Promotion
 
 router = APIRouter(prefix="/promotions", tags=["promotions"])
@@ -61,7 +61,6 @@ async def create_promotion(
     data: PromotionCreate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("promotions", "create"))] = None,
 ):
     ma = f"KM-{int(Decimal(uuid.uuid4().int).remainder(10**8)):08d}"
     p = Promotion(
@@ -84,7 +83,6 @@ async def update_promotion(
     data: PromotionUpdate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("promotions", "update"))] = None,
 ):
     try: u = uuid.UUID(promotion_id)
     except ValueError: raise HTTPException(400, "invalid_id")

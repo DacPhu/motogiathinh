@@ -7,15 +7,15 @@ Wire shape uses English field names; DB columns are Vietnamese underneath
 import uuid
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.ocr import extract_cccd_info
 from app.core.storage import upload_bytes
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.branch import Branch
 from app.models.class_model import Class, ClassEnrollment
 from app.models.enums import GenderType, LicenseType, RoleName, StudentStatus
@@ -66,6 +66,8 @@ def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None
         "branchId": slug_map.get(s.branch_id, str(s.branch_id) if s.branch_id else None),
         "createdAt": iso_to_vn_datetime(s.created_at) or "",
         "docs_cccd": bool(getattr(s, "cmnd_front_url", None)),
+        "docs_cccd_back": bool(getattr(s, "docs_cccd_back_url", None)),
+        "docs_cccd_qr": bool(getattr(s, "docs_cccd_qr_url", None)),
         "docs_gksk": bool(getattr(s, "docs_gksk_url", None)),
         "docs_donDeNghi": bool(getattr(s, "docs_don_de_nghi_url", None)),
         "docs_the3x4": bool(getattr(s, "anh_the_url", None)),
@@ -84,8 +86,10 @@ async def list_students(current_user: CurrentUser, db: DB):
     # reference; capping orphans `payment.studentId → undefined` and crashes
     # screen-payments.jsx (s.totalFee on undefined).
     query = select(Student).where(Student.deleted_at.is_(None)).order_by(Student.created_at.desc())
-    if current_user.role != RoleName.admin and current_user.branch_id:
+    if current_user.role == RoleName.staff and current_user.branch_id:
         query = query.where(Student.branch_id == current_user.branch_id)
+    elif current_user.role == RoleName.guest:
+        query = query.where(Student.responsible_staff_id == current_user.id)
     result = await db.execute(query)
     slug_map = await _slug_map(db)
     students = list(result.scalars().all())
@@ -148,18 +152,22 @@ async def create_student(
     data: StudentCreateRequest,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("students", "create"))] = None,
 ):
     f = data.form
-    # Resolve the class — branch_id is derived from it
-    try:
-        cls_uuid = uuid.UUID(f.classId)
-    except ValueError:
-        raise HTTPException(400, "invalid_classId")
+    # Guest kiosk path: ignore form classId/responsibleStaffId, fill from user.
+    if current_user.role == RoleName.guest:
+        if not current_user.assigned_class_id:
+            raise HTTPException(400, "guest_no_class")
+        cls_uuid = current_user.assigned_class_id
+    else:
+        try:
+            cls_uuid = uuid.UUID(f.classId)
+        except ValueError:
+            raise HTTPException(400, "invalid_classId")
     cls = await db.get(Class, cls_uuid)
     if not cls:
         raise HTTPException(400, "invalid_classId")
-    if current_user.role != RoleName.admin and current_user.branch_id != cls.branch_id:
+    if current_user.role == RoleName.staff and current_user.branch_id != cls.branch_id:
         raise HTTPException(403, "wrong_branch")
     # Resolve fee plan + promotion to compute totalFee
     fp = None
@@ -175,7 +183,9 @@ async def create_student(
     total_fee = max(Decimal(0), fp_amount - pr_disc)
     # Resolve responsible staff
     resp_uuid = None
-    if f.responsibleStaffId:
+    if current_user.role == RoleName.guest:
+        resp_uuid = current_user.id
+    elif f.responsibleStaffId:
         try: resp_uuid = uuid.UUID(f.responsibleStaffId)
         except ValueError: resp_uuid = None
 
@@ -251,13 +261,14 @@ async def update_student(
     data: StudentUpdateRequest,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("students", "update"))] = None,
 ):
     try: s_uuid = uuid.UUID(student_id)
     except ValueError: raise HTTPException(400, "invalid_id")
     s = await db.get(Student, s_uuid)
     if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
+    if current_user.role == RoleName.guest and s.responsible_staff_id != current_user.id:
+        raise HTTPException(403, "not_own_student")
+    if current_user.role == RoleName.staff and current_user.branch_id != s.branch_id:
         raise HTTPException(403, "wrong_branch")
 
     fields = data.model_dump(exclude_unset=True)
@@ -304,7 +315,23 @@ async def update_student(
 
 
 # ── Docs upload / delete ────────────────────────────────────────────────────
-DOC_KEYS = {"cccd", "gksk", "donDeNghi", "the3x4"}
+DOC_KEYS = {"cccd", "cccd_back", "cccd_qr", "gksk", "donDeNghi", "the3x4"}
+
+
+def _set_doc_url(s: Student, key: str, url: Optional[str]) -> None:
+    if key == "cccd":         s.cmnd_front_url = url
+    elif key == "cccd_back":  s.docs_cccd_back_url = url
+    elif key == "cccd_qr":    s.docs_cccd_qr_url = url
+    elif key == "gksk":       s.docs_gksk_url = url
+    elif key == "donDeNghi":  s.docs_don_de_nghi_url = url
+    elif key == "the3x4":     s.anh_the_url = url
+
+
+def _check_student_access(current_user, s: Student) -> None:
+    if current_user.role == RoleName.guest and s.responsible_staff_id != current_user.id:
+        raise HTTPException(403, "not_own_student")
+    if current_user.role == RoleName.staff and current_user.branch_id != s.branch_id:
+        raise HTTPException(403, "wrong_branch")
 
 
 @router.post("/{student_id}/docs/{key}", status_code=201)
@@ -314,7 +341,6 @@ async def upload_doc(
     file: UploadFile = File(...),
     current_user: CurrentUser = None,
     db: DB = None,
-    _perm: Annotated[None, Depends(require_permission("students", "update"))] = None,
 ):
     if key not in DOC_KEYS:
         raise HTTPException(400, "invalid_key")
@@ -322,18 +348,14 @@ async def upload_doc(
     except ValueError: raise HTTPException(400, "invalid_id")
     s = await db.get(Student, s_uuid)
     if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
+    _check_student_access(current_user, s)
     content = await file.read()
     if len(content) > 8 * 1024 * 1024:
         raise HTTPException(400, "file_too_large")
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() or "bin"
     object_key = f"students/{student_id}/{key}-{int(datetime.now(timezone.utc).timestamp()*1000)}.{ext}"
     url = upload_bytes(object_key, content, content_type=file.content_type or "application/octet-stream")
-    if key == "cccd":      s.cmnd_front_url = url
-    elif key == "gksk":    s.docs_gksk_url = url
-    elif key == "donDeNghi": s.docs_don_de_nghi_url = url
-    elif key == "the3x4":  s.anh_the_url = url
+    _set_doc_url(s, key, url)
     await db.commit()
     return {"ok": True, "key": key, "url": url, "size": len(content)}
 
@@ -344,7 +366,6 @@ async def delete_doc(
     key: str,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("students", "update"))] = None,
 ):
     if key not in DOC_KEYS:
         raise HTTPException(400, "invalid_key")
@@ -352,12 +373,8 @@ async def delete_doc(
     except ValueError: raise HTTPException(400, "invalid_id")
     s = await db.get(Student, s_uuid)
     if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
-    if key == "cccd":      s.cmnd_front_url = None
-    elif key == "gksk":    s.docs_gksk_url = None
-    elif key == "donDeNghi": s.docs_don_de_nghi_url = None
-    elif key == "the3x4":  s.anh_the_url = None
+    _check_student_access(current_user, s)
+    _set_doc_url(s, key, None)
     await db.commit()
     return {"ok": True, "key": key}
 

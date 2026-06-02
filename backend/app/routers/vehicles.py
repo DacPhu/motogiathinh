@@ -2,13 +2,13 @@
 
 import uuid
 from decimal import Decimal
-from typing import Annotated, Optional
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser
 from app.models.branch import Branch
 from app.models.enums import LicenseType, VehicleStatus
 from app.models.vehicle import Vehicle
@@ -88,7 +88,6 @@ async def create_vehicle(
     data: VehicleCreate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("vehicles", "create"))] = None,
 ):
     branch_uuid = await _branch_id(db, data.branchId)
     if not branch_uuid:
@@ -119,7 +118,6 @@ async def update_vehicle(
     data: VehicleUpdate,
     current_user: CurrentUser,
     db: DB,
-    _perm: Annotated[None, Depends(require_permission("vehicles", "update"))] = None,
 ):
     try: u = uuid.UUID(vehicle_id)
     except ValueError: raise HTTPException(400, "invalid_id")
