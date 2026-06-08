@@ -566,6 +566,7 @@
       getFeePlan:   (id) => feePlansById.get(id),
       getPromotion: (id) => promotionsById.get(id),
       getVehicle:   (id) => vehiclesById.get(id),
+      getBranchOpts() { return this.branches.map(b => ({ id: b.id, label: b.name })); },
       paymentsForStudent: (id) => paymentsByStudentId.get(id) || [],
       rentalsForStudent:  (id) => rentalsByStudentId.get(id)  || [],
       rentalsForVehicle:  (id) => rentalsByVehicleId.get(id)  || [],
