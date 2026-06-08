@@ -9,10 +9,14 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import func, select
 
 from app.core.security import hash_password
-from app.dependencies import ALL_RESOURCES, DB, AdminUser, CurrentUser, first_branch_slug, resolve_branch_slugs
+from app.dependencies import (
+    ALL_RESOURCES, DB, AdminUser, CurrentUser,
+    first_branch_slug, load_user_assignments, resolve_branch_slugs,
+)
 from app.models.branch import Branch
 from app.models.enums import RoleName
 from app.models.user import User
+from app.models.user_assignment import UserBranchAssignment, UserClassAssignment
 from app.models.user_permission import UserPermission
 from app.schemas.auth import WireUser
 from app.services.audit_service import log_action
@@ -34,6 +38,7 @@ async def list_accounts(current_user: CurrentUser, db: DB):
         users = [current_user]
     slug_map = await resolve_branch_slugs(db, users)
     admin_fallback = await first_branch_slug(db)
+    assignments = await load_user_assignments(db, [u.id for u in users])
     return [
         WireUser.from_user(
             u,
@@ -41,6 +46,8 @@ async def list_accounts(current_user: CurrentUser, db: DB):
                 slug_map.get(u.branch_id) if u.branch_id
                 else (admin_fallback if u.role == RoleName.admin else None)
             ),
+            branch_ids=assignments.get(u.id, {}).get("branchIds", []),
+            class_ids=assignments.get(u.id, {}).get("classIds", []),
         ).model_dump()
         for u in users
     ]
@@ -56,6 +63,56 @@ async def _branch_uuid_from_slug(db, s: Optional[str]) -> Optional[uuid.UUID]:
     return b.id if b else None
 
 
+async def _branch_uuids_from_slugs(db, slugs: list[str]) -> list[uuid.UUID]:
+    """Resolve a list of branch slugs (or uuid strings) → branch uuids."""
+    out: list[uuid.UUID] = []
+    for s in slugs or []:
+        bid = await _branch_uuid_from_slug(db, s)
+        if bid and bid not in out:
+            out.append(bid)
+    return out
+
+
+async def _replace_assignments(
+    db,
+    user_id: uuid.UUID,
+    branch_ids: Optional[list[uuid.UUID]],
+    class_ids: Optional[list[uuid.UUID]],
+) -> None:
+    """Replace the user's branch/class assignment rows (delete old, insert new).
+    Permissive — does not validate active status. None means 'leave unchanged'."""
+    if branch_ids is not None:
+        old = await db.execute(
+            select(UserBranchAssignment).where(UserBranchAssignment.user_id == user_id)
+        )
+        for row in old.scalars().all():
+            await db.delete(row)
+        for bid in branch_ids:
+            db.add(UserBranchAssignment(user_id=user_id, branch_id=bid))
+    if class_ids is not None:
+        old = await db.execute(
+            select(UserClassAssignment).where(UserClassAssignment.user_id == user_id)
+        )
+        for row in old.scalars().all():
+            await db.delete(row)
+        for cid in class_ids:
+            db.add(UserClassAssignment(user_id=user_id, class_id=cid))
+
+
+def _class_uuids(class_ids: Optional[list[str]]) -> Optional[list[uuid.UUID]]:
+    if class_ids is None:
+        return None
+    out: list[uuid.UUID] = []
+    for s in class_ids:
+        try:
+            cid = uuid.UUID(s)
+        except (ValueError, TypeError):
+            continue
+        if cid not in out:
+            out.append(cid)
+    return out
+
+
 class AccountCreate(BaseModel):
     name: str
     role: str = "staff"
@@ -63,6 +120,8 @@ class AccountCreate(BaseModel):
     branchId: Optional[str] = None
     phone: Optional[str] = None
     password: str
+    branchIds: Optional[list[str]] = None  # branch SLUGS (CTV many-to-many)
+    classIds: Optional[list[str]] = None   # class UUID strings (CTV many-to-many)
 
 
 class AccountUpdate(BaseModel):
@@ -72,11 +131,13 @@ class AccountUpdate(BaseModel):
     phone: Optional[str] = None
     email: Optional[EmailStr] = None
     active: Optional[bool] = None
+    branchIds: Optional[list[str]] = None  # branch SLUGS (CTV many-to-many)
+    classIds: Optional[list[str]] = None   # class UUID strings (CTV many-to-many)
 
 
 @router.post("", status_code=201)
 async def create_account(data: AccountCreate, current_user: AdminUser, db: DB):
-    if data.role not in ("admin", "staff"):
+    if data.role not in ("admin", "staff", "collaborator"):
         raise HTTPException(400, "invalid_role")
     # Ensure email is unique
     exists = await db.execute(select(User).where(User.email == data.email))
@@ -93,10 +154,33 @@ async def create_account(data: AccountCreate, current_user: AdminUser, db: DB):
         is_active=True,
     )
     db.add(u)
+    await db.flush()  # need u.id for assignment rows
+    # Many-to-many assignments (permissive — no active validation).
+    branch_ids = await _branch_uuids_from_slugs(db, data.branchIds) if data.branchIds is not None else None
+    class_ids = _class_uuids(data.classIds)
+    await _replace_assignments(db, u.id, branch_ids, class_ids)
+    await log_action(
+        db,
+        user_id=current_user.id,
+        branch_id=current_user.branch_id,
+        user_role=current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role),
+        action="accounts.create",
+        resource="accounts",
+        resource_id=u.id,
+        new_values={
+            "email": u.email, "name": u.full_name, "role": data.role,
+            "branchIds": data.branchIds or [], "classIds": data.classIds or [],
+        },
+    )
     await db.commit()
     await db.refresh(u)
     slug = (await resolve_branch_slugs(db, [u])).get(u.branch_id) if u.branch_id else (await first_branch_slug(db) if u.role == RoleName.admin else None)
-    return WireUser.from_user(u, branch_id_override=slug).model_dump()
+    assignments = (await load_user_assignments(db, [u.id])).get(u.id, {})
+    return WireUser.from_user(
+        u, branch_id_override=slug,
+        branch_ids=assignments.get("branchIds", []),
+        class_ids=assignments.get("classIds", []),
+    ).model_dump()
 
 
 @router.patch("/{user_id}")
@@ -109,16 +193,38 @@ async def update_account(user_id: str, data: AccountUpdate, current_user: AdminU
     if "name" in fields:  u.full_name = fields["name"]
     if "phone" in fields: u.phone = fields["phone"]
     if "email" in fields: u.email = fields["email"]
-    if "role" in fields and fields["role"] in ("admin", "staff"):
+    if "role" in fields and fields["role"] in ("admin", "staff", "collaborator"):
         u.role = RoleName(fields["role"])
     if "branchId" in fields:
         u.branch_id = await _branch_uuid_from_slug(db, fields["branchId"])
     if "active" in fields:
         u.is_active = bool(fields["active"])
+    # Many-to-many assignments — only touch when the key was provided.
+    branch_ids = (
+        await _branch_uuids_from_slugs(db, fields["branchIds"]) if "branchIds" in fields else None
+    )
+    class_ids = _class_uuids(fields["classIds"]) if "classIds" in fields else None
+    if branch_ids is not None or class_ids is not None:
+        await _replace_assignments(db, u.id, branch_ids, class_ids)
+    await log_action(
+        db,
+        user_id=current_user.id,
+        branch_id=current_user.branch_id,
+        user_role=current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role),
+        action="accounts.update",
+        resource="accounts",
+        resource_id=u.id,
+        new_values=fields,
+    )
     await db.commit()
     await db.refresh(u)
     slug = (await resolve_branch_slugs(db, [u])).get(u.branch_id) if u.branch_id else (await first_branch_slug(db) if u.role == RoleName.admin else None)
-    return WireUser.from_user(u, branch_id_override=slug).model_dump()
+    assignments = (await load_user_assignments(db, [u.id])).get(u.id, {})
+    return WireUser.from_user(
+        u, branch_id_override=slug,
+        branch_ids=assignments.get("branchIds", []),
+        class_ids=assignments.get("classIds", []),
+    ).model_dump()
 
 
 class ResetPasswordRequest(BaseModel):

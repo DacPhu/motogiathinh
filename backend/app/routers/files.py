@@ -11,7 +11,8 @@ from fastapi.responses import Response
 from sqlalchemy import select
 
 from app.core.storage import get_object_bytes
-from app.dependencies import DB, CurrentUser
+from app.dependencies import DB, CurrentUser, accessible_class_ids
+from app.models.class_model import ClassEnrollment
 from app.models.enums import RoleName
 from app.models.payment import Payment
 from app.models.student import Student
@@ -29,13 +30,30 @@ async def get_file(kind: str, rec_id: str, filename: str, current_user: CurrentU
         raise HTTPException(400, "invalid_filename")
     try: rec_uuid = uuid.UUID(rec_id)
     except ValueError: raise HTTPException(400, "invalid_rec_id")
-    # Branch scope
+    # Access scope
     if current_user.role != RoleName.admin:
         if kind == "students":
             owner = await db.get(Student, rec_uuid)
         else:
             owner = await db.get(Payment, rec_uuid)
-        if not owner or owner.branch_id != current_user.branch_id:
+        if not owner:
+            raise HTTPException(403, "wrong_branch")
+        if current_user.role == RoleName.collaborator and kind == "students":
+            # CTV: allow only files of students in an assigned active class.
+            acc = await accessible_class_ids(db, current_user)
+            ok = False
+            if acc:
+                res = await db.execute(
+                    select(ClassEnrollment.id).where(
+                        ClassEnrollment.student_id == rec_uuid,
+                        ClassEnrollment.class_id.in_(acc),
+                        ClassEnrollment.deleted_at.is_(None),
+                    ).limit(1)
+                )
+                ok = res.first() is not None
+            if not ok:
+                raise HTTPException(403, "wrong_branch")
+        elif owner.branch_id != current_user.branch_id:
             raise HTTPException(403, "wrong_branch")
     key = f"{kind}/{rec_id}/{filename}"
     try:

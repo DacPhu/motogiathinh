@@ -42,7 +42,7 @@
   async function api(path, opts = {}) {
     const res = await fetch(API + path, {
       credentials: 'include',
-      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
+      headers: { 'Content-Type': 'application/json', ...(window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {}), ...(opts.headers || {}) },
       ...opts,
       body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body,
     });
@@ -100,6 +100,186 @@
     }, ms);
   };
 
+  // Local Vietnamese CCCD QR scanner. Decodes a QR from an image File
+  // entirely in-browser at FULL resolution, trying in order: native
+  // BarcodeDetector → vendored ZXing (TRY_HARDER) → jsQR. Parses the
+  // pipe-separated chip-card payload into form-field keys. No network /
+  // OCR service is involved (fully offline once the libs are vendored).
+  let _jsqrLoad = null; // module-level cache for the single jsQR injection
+  function _loadJsQR() {
+    if (window.jsQR) return Promise.resolve(window.jsQR);
+    if (_jsqrLoad) return _jsqrLoad;
+    _jsqrLoad = new Promise((resolve, reject) => {
+      const sc = document.createElement('script');
+      sc.src = 'vendor/jsqr.min.js';
+      sc.onload = () => resolve(window.jsQR);
+      sc.onerror = () => reject(new Error('jsqr_load_failed'));
+      document.head.appendChild(sc);
+    });
+    return _jsqrLoad;
+  }
+  let _zxingLoad = null; // vendored @zxing/library — robust ZXing decoder, offline
+  function _loadZxing() {
+    if (window.ZXing) return Promise.resolve(window.ZXing);
+    if (_zxingLoad) return _zxingLoad;
+    _zxingLoad = new Promise((resolve, reject) => {
+      const sc = document.createElement('script');
+      sc.src = 'vendor/zxing.umd.min.js';
+      sc.onload = () => resolve(window.ZXing);
+      sc.onerror = () => reject(new Error('zxing_load_failed'));
+      document.head.appendChild(sc);
+    });
+    return _zxingLoad;
+  }
+  function _loadImg(url) {
+    return new Promise((resolve, reject) => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => reject(new Error('image_load_failed'));
+      im.src = url;
+    });
+  }
+  // Downscale large photos before upload — caps the long edge (~2400px,
+  // JPEG q0.9). Keeps huge QR/detail margin for downstream re-scans while
+  // keeping files reasonable. Non-images / already-small files pass through.
+  async function _capImage(file, maxEdge = 2400, quality = 0.9) {
+    try {
+      if (!file || !/^image\//.test(file.type) || /gif|svg/.test(file.type)) return file;
+      const url = URL.createObjectURL(file);
+      try {
+        const img = await _loadImg(url);
+        const long = Math.max(img.naturalWidth, img.naturalHeight);
+        if (!long || long <= maxEdge) return file;
+        const scale = maxEdge / long;
+        const w = Math.round(img.naturalWidth * scale), h = Math.round(img.naturalHeight * scale);
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        const blob = await new Promise(res => c.toBlob(res, 'image/jpeg', quality));
+        if (!blob) return file;
+        const base = (file.name || 'photo').replace(/\.[^.]+$/, '');
+        return new File([blob], base + '.jpg', { type: 'image/jpeg' });
+      } finally { URL.revokeObjectURL(url); }
+    } catch { return file; }
+  }
+  // Draw img to a canvas, downscaling so the long edge ≤ maxEdge (0 = native).
+  function _scaledCanvas(img, maxEdge) {
+    let w = img.naturalWidth, h = img.naturalHeight;
+    if (maxEdge && Math.max(w, h) > maxEdge) {
+      const s = maxEdge / Math.max(w, h);
+      w = Math.max(1, Math.round(w * s)); h = Math.max(1, Math.round(h * s));
+    }
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    c.getContext('2d').drawImage(img, 0, 0, w, h);
+    return c;
+  }
+  // Crop a natural-pixel region of img and scale it to ~outEdge long-edge
+  // (used to isolate a QR that's small within a busy card photo).
+  function _cropCanvas(img, sx, sy, sw, sh, outEdge) {
+    const s = outEdge / Math.max(sw, sh);
+    const ow = Math.max(1, Math.round(sw * s)), oh = Math.max(1, Math.round(sh * s));
+    const c = document.createElement('canvas'); c.width = ow; c.height = oh;
+    c.getContext('2d').drawImage(img, sx, sy, sw, sh, 0, 0, ow, oh);
+    return c;
+  }
+  // Try to decode a QR from a canvas: jsQR (both inversions) then ZXing
+  // (TRY_HARDER). Returns the raw string or null.
+  async function _decodeCanvas(canvas) {
+    try {
+      const ctx = canvas.getContext('2d');
+      const d = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const jsQR = window.jsQR || await _loadJsQR();
+      const r = jsQR(d.data, canvas.width, canvas.height, { inversionAttempts: 'attemptBoth' });
+      if (r && r.data) return r.data;
+    } catch {}
+    try {
+      const ZX = window.ZXing || await _loadZxing();
+      const hints = new Map();
+      hints.set(ZX.DecodeHintType.TRY_HARDER, true);
+      hints.set(ZX.DecodeHintType.POSSIBLE_FORMATS, [ZX.BarcodeFormat.QR_CODE]);
+      const res = await new ZX.BrowserQRCodeReader(hints).decodeFromImageUrl(canvas.toDataURL('image/jpeg', 0.92));
+      if (res && res.getText) return res.getText();
+    } catch {}
+    return null;
+  }
+  function _toVnDate(s) {
+    // 8-digit "ddMMyyyy" → "dd/mm/yyyy"; anything else → null.
+    if (typeof s !== 'string' || !/^\d{8}$/.test(s)) return null;
+    return s.slice(0, 2) + '/' + s.slice(2, 4) + '/' + s.slice(4, 8);
+  }
+  window.MGT_QR = {
+    // Decode a CCCD QR from an image File. Returns { ok, fields, raw, error }.
+    //
+    // Measured on real 12 MP phone photos: decoding the FULL-resolution image
+    // almost always fails (the locator can't lock the finder patterns amid
+    // sensor/JPEG noise), while a DOWNSCALED copy (~1000px) reliably succeeds
+    // — downscaling acts as a denoise/low-pass filter. So we decode a ladder
+    // of downscaled copies (smallest-first) with both engines (jsQR + ZXing),
+    // then a tiling pass to isolate a QR that's small within a busy card.
+    // The original file is untouched (saved separately at full quality).
+    async scanFile(file) {
+      const url = URL.createObjectURL(file);
+      try {
+        const img = await _loadImg(url);
+        const W = img.naturalWidth, H = img.naturalHeight;
+        let raw = null;
+
+        // 0) Native BarcodeDetector on the whole image (fast; Chromium/Android).
+        if ('BarcodeDetector' in window) {
+          try {
+            const det = new BarcodeDetector({ formats: ['qr_code'] });
+            const res = await det.detect(img);
+            if (res && res.length) raw = res[0].rawValue;
+          } catch {}
+        }
+
+        // 1) Downscale ladder — smallest first (~1000px is the sweet spot),
+        //    then larger for QRs that sit small in frame, then native.
+        const scales = [1000, 1400, 1800, 2400, 0];
+        for (const s of scales) {
+          if (raw) break;
+          raw = await _decodeCanvas(_scaledCanvas(img, s));
+        }
+
+        // 2) Tiling fallback — crop regions and blow each up to ~1200px so a
+        //    small QR fills the decode frame. CCCD QR usually sits on the right.
+        if (!raw && W > 800 && H > 800) {
+          const R = [
+            [W * 0.5, 0, W * 0.5, H], [0, 0, W * 0.5, H],                 // right / left half
+            [0, 0, W, H * 0.5], [0, H * 0.5, W, H * 0.5],                 // top / bottom half
+            [W * 0.25, H * 0.25, W * 0.5, H * 0.5],                       // center
+            [W * 0.5, 0, W * 0.5, H * 0.5], [W * 0.5, H * 0.5, W * 0.5, H * 0.5], // right quadrants
+          ];
+          for (const [sx, sy, sw, sh] of R) {
+            if (raw) break;
+            raw = await _decodeCanvas(_cropCanvas(img, sx | 0, sy | 0, sw | 0, sh | 0, 1200));
+          }
+        }
+
+        if (!raw) return { ok: false, fields: {}, raw: null, error: 'no_qr' };
+        const fields = this.parseCCCD(raw);
+        return { ok: Object.keys(fields).length > 0, fields, raw, error: null };
+      } catch (e) {
+        return { ok: false, fields: {}, raw: null, error: (e && e.message) || 'scan_failed' };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    },
+    // Parse a raw Vietnamese CCCD QR string into form fields. Exported for testing.
+    parseCCCD(raw) {
+      if (typeof raw !== 'string' || raw.indexOf('|') < 0) return {};
+      const p = raw.split('|');
+      if (p.length < 3) return {};
+      const out = {};
+      if (p[0]) out.idNumber = p[0];
+      if (p[2]) out.name = p[2];
+      const dob = _toVnDate(p[3]); if (dob) out.dob = dob;
+      if (p[4]) out.gender = p[4];
+      if (p[5]) out.address = p[5];
+      const cap = _toVnDate(p[6]); if (cap) out.ngayCapCCCD = cap;
+      return out;
+    },
+  };
+
   window.fmtVND = (n) => {
     const abs = Math.abs(Math.round(n));
     return (n < 0 ? '−' : '') + abs.toLocaleString('en-US') + 'đ';
@@ -126,11 +306,11 @@
   // VN CCCD — canonical 12 digits, rendered `xxx xxx xxx xxx`. Partial-build
   // formatting like fmtPhone so users see the spaces appear as they type.
   window.fmtCCCD = (s) => {
+    // Group as 3-3-6 → "123 456 789012".
     const d = window.digitsOnly(s).slice(0, 12);
     if (d.length <= 3) return d;
     if (d.length <= 6) return d.slice(0, 3) + ' ' + d.slice(3);
-    if (d.length <= 9) return d.slice(0, 3) + ' ' + d.slice(3, 6) + ' ' + d.slice(6);
-    return d.slice(0, 3) + ' ' + d.slice(3, 6) + ' ' + d.slice(6, 9) + ' ' + d.slice(9);
+    return d.slice(0, 3) + ' ' + d.slice(3, 6) + ' ' + d.slice(6);
   };
 
   // Money — thousands-separator with commas. Used for live-format inside
@@ -187,6 +367,7 @@
         const fd = new FormData(form);
         try {
           const out = await api('/auth/login', { method: 'POST', body: { email: fd.get('email'), password: fd.get('password') } });
+          if (out && out.token) { window.MGT_TOKEN = out.token; try { window.MGT_SAVE_TOKEN && await window.MGT_SAVE_TOKEN(out.token); } catch (e3) {} }
           overlay.remove(); style.remove(); resolve(out.user);
         } catch (e2) {
           err.textContent = /401/.test(String(e2.message)) ? 'Email hoặc mật khẩu không đúng.' : String(e2.message);
@@ -226,6 +407,13 @@
     const TODAY_STR = `${p2(NOW.getDate())}/${p2(NOW.getMonth() + 1)}/${NOW.getFullYear()}`;
 
     promotions.forEach(p => { p.appliesTo = (p.appliesTo_csv || '').split('|').filter(Boolean); });
+    // Collaborator (CTV) accounts carry multi-branch / multi-class assignments.
+    // Default to empty arrays so the account form + table render safely even
+    // when the API omits them (staff/admin rows).
+    accounts.forEach(a => {
+      if (!Array.isArray(a.branchIds)) a.branchIds = [];
+      if (!Array.isArray(a.classIds))  a.classIds  = [];
+    });
     // Compat: NotificationRow reads n.detail; spec name is n.message.
     notifications.forEach(n => { if (n.detail == null) n.detail = n.message; });
 
@@ -240,7 +428,7 @@
 
     const students = studentsRaw.map(s => ({
       ...s, createdAtMs: parseDT(s.createdAt),
-      docs: { cccd: !!s.docs_cccd, gksk: !!s.docs_gksk, donDeNghi: !!s.docs_donDeNghi, the3x4: !!s.docs_the3x4 },
+      docs: { cccd: !!s.docs_cccd, gksk: !!s.docs_gksk, donDeNghi: !!s.docs_donDeNghi, the3x4: !!s.docs_the3x4, cccdBack: !!s.docs_cccdBack, cccdQR: !!s.docs_cccdQR, bangLaiFront: !!s.docs_bangLaiFront, bangLaiBack: !!s.docs_bangLaiBack },
     }));
     // Split the wire payload by kind. Existing rows that pre-date the
     // schema migration come back as kind=undefined → coerce to 'tuition'
@@ -322,7 +510,7 @@
 
     function patchStudentIn(raw) {
       const s = { ...raw, createdAtMs: parseDT(raw.createdAt),
-        docs: { cccd: !!raw.docs_cccd, gksk: !!raw.docs_gksk, donDeNghi: !!raw.docs_donDeNghi, the3x4: !!raw.docs_the3x4 } };
+        docs: { cccd: !!raw.docs_cccd, gksk: !!raw.docs_gksk, donDeNghi: !!raw.docs_donDeNghi, the3x4: !!raw.docs_the3x4, cccdBack: !!raw.docs_cccdBack, cccdQR: !!raw.docs_cccdQR, bangLaiFront: !!raw.docs_bangLaiFront, bangLaiBack: !!raw.docs_bangLaiBack } };
       students.push(s); studentsById.set(s.id, s);
       pushTo(studentsByClassId, s.classId, s); pushTo(studentsByBranchId, s.branchId, s);
       recomputeDerived(s);
@@ -482,6 +670,17 @@
           this._bump(); return raw;
         },
         async createStudent(payload) { const r = patchStudentIn(await api('/students', { method: 'POST', body: payload })); this._bump(); return r; },
+        // Old→new Vietnamese address (2025 admin reform) via diachi.io proxy.
+        // Never throws — returns the original address on any failure.
+        async convertAddress(address) {
+          if (!address || !String(address).trim()) return { converted: address || '', notSure: false, ok: false };
+          try {
+            const r = await api('/address/convert', { method: 'POST', body: { addresses: [address] } });
+            const it = r && r.results && r.results[0];
+            return it ? { converted: it.converted || address, notSure: !!it.notSure, ok: !!it.ok }
+                      : { converted: address, notSure: true, ok: false };
+          } catch (e) { return { converted: address, notSure: true, ok: false }; }
+        },
         async createPayment(payload) { const r = patchPaymentIn(await api('/payments', { method: 'POST', body: payload })); this._bump(); return r; },
         async createRental(payload) {
           // Convenience wrapper. Server computes amount = vehicle.price ×
@@ -535,14 +734,21 @@
         },
         async _upload(path, file) {
           const fd = new FormData(); fd.append('file', file);
-          const res = await fetch(API + path, { method: 'POST', credentials: 'include', body: fd });
+          const res = await fetch(API + path, { method: 'POST', credentials: 'include', headers: window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {}, body: fd });
           if (!res.ok) throw new Error('upload_failed: ' + res.status);
           return res.json();
         },
         async uploadStudentDoc(studentId, key, file) {
-          const out = await this._upload('/students/' + encodeURIComponent(studentId) + '/docs/' + encodeURIComponent(key), file);
+          const capped = await _capImage(file);
+          const out = await this._upload('/students/' + encodeURIComponent(studentId) + '/docs/' + encodeURIComponent(key), capped);
           const s = studentsById.get(studentId);
-          if (s) { s.docs[key] = true; s['docs_' + key] = true; s['docs_' + key + '_url'] = out.url; }
+          if (s) {
+            s.docs[key] = true; s['docs_' + key] = true;
+            // Store the browser-fetchable /api/files path (not the internal
+            // MinIO URL) so <img> previews work same-origin under cookie auth.
+            const fn = (out && out.url ? String(out.url) : '').split('/').pop();
+            s['docs_' + key + '_url'] = fn ? '/api/files/students/' + studentId + '/' + fn : ((out && out.url) || null);
+          }
           this._bump(); return out;
         },
         async deleteStudentDoc(studentId, key) {
@@ -603,7 +809,7 @@
           if (ex) {
             Object.assign(ex, raw, {
               createdAtMs: parseDT(raw.createdAt),
-              docs: { cccd: !!raw.docs_cccd, gksk: !!raw.docs_gksk, donDeNghi: !!raw.docs_donDeNghi, the3x4: !!raw.docs_the3x4 },
+              docs: { cccd: !!raw.docs_cccd, gksk: !!raw.docs_gksk, donDeNghi: !!raw.docs_donDeNghi, the3x4: !!raw.docs_the3x4, cccdBack: !!raw.docs_cccdBack, cccdQR: !!raw.docs_cccdQR, bangLaiFront: !!raw.docs_bangLaiFront, bangLaiBack: !!raw.docs_bangLaiBack },
             });
             recomputeDerived(ex);
           }
@@ -629,6 +835,7 @@
         },
         async logout() {
           try { await api('/auth/logout', { method: 'POST' }); } catch {}
+          window.MGT_TOKEN = null; try { window.MGT_CLEAR_TOKEN && await window.MGT_CLEAR_TOKEN(); } catch {}
           window.location.reload();
         },
       },
@@ -638,5 +845,10 @@
     return MGT_DATA;
   }
 
-  window.MGT_DATA_READY = boot().catch(err => { console.error('[data-loader] boot failed:', err); throw err; });
+  // Native app sets window.MGT_BOOT_GATE (a promise that loads the stored token
+  // into window.MGT_TOKEN) so the first /me call is authenticated. Web has no
+  // gate → boots immediately.
+  window.MGT_DATA_READY = Promise.resolve(window.MGT_BOOT_GATE)
+    .then(() => boot())
+    .catch(err => { console.error('[data-loader] boot failed:', err); throw err; });
 })();

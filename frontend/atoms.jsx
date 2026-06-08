@@ -191,7 +191,7 @@ function Avatar({ name, size = 32, glow = false }) {
 // (RecordCreatorModal threads this through via field metadata).
 // --------------------------------------------------------------------
 function Input({ label, value, onChange, placeholder, mono = false, prefix, type = "text",
-                 digits = false, maxDigits, format, storeFormatted = false }) {
+                 digits = false, maxDigits, format, storeFormatted = false, disabled = false, success = false, invalid = false }) {
   // digits=true     → strip non-digits on every keystroke (cap at maxDigits).
   // format          → live mask fn (e.g. fmtPhone, fmtMoneyInput, fmtDateInput).
   //                   Applied to the visible input value AS THE USER TYPES.
@@ -254,15 +254,19 @@ function Input({ label, value, onChange, placeholder, mono = false, prefix, type
           explicitly nulled to suppress the global ring. */}
       <div style={{
         display: "flex", alignItems: "center", gap: 6,
-        background: "var(--ink-2)",
-        border: `1px solid ${focused ? "var(--neon-cyan)" : "var(--glass-stroke)"}`,
-        boxShadow: focused ? "0 0 14px var(--neon-cyan-haze)" : "none",
+        background: success ? "color-mix(in oklab, var(--neon-lime) 10%, transparent)"
+                  : invalid ? "color-mix(in oklab, var(--neon-pink) 10%, transparent)" : "var(--ink-2)",
+        border: `1px solid ${focused && !disabled ? "var(--neon-cyan)" : success ? "var(--neon-lime)" : invalid ? "var(--neon-pink)" : "var(--glass-stroke)"}`,
+        boxShadow: focused && !disabled ? "0 0 14px var(--neon-cyan-haze)" : "none",
         borderRadius: 10, padding: "0 12px",
+        opacity: disabled ? 0.5 : 1,
+        cursor: disabled ? "not-allowed" : "auto",
         transition: "border-color 140ms var(--ease-out), box-shadow 140ms var(--ease-out)",
       }}>
         {prefix && <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, color: "var(--fg-3)" }}>{prefix}</span>}
         <input ref={inputRef} value={display} onChange={handle} placeholder={placeholder}
                type={effectiveType}
+               disabled={disabled}
                inputMode={digits ? "numeric" : undefined}
                autoComplete={isPassword ? "new-password" : undefined}
                onFocus={() => setFocused(true)}
@@ -638,7 +642,7 @@ function ClassStatusPill({ status, onClick, glow }) {
 // --------------------------------------------------------------------
 // Select dropdown — used for Học phí, Khuyến mãi, Class, etc.
 // --------------------------------------------------------------------
-function Select({ label, value, onChange, options, placeholder = "Chọn…", note }) {
+function Select({ label, value, onChange, options, placeholder = "Chọn…", note, success = false, invalid = false }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {label && <label style={{
@@ -647,8 +651,11 @@ function Select({ label, value, onChange, options, placeholder = "Chọn…", no
       }}>{label}</label>}
       <div style={{ position: "relative" }}>
         <select value={value || ""} onChange={e => onChange && onChange(e.target.value)} style={{
-          width: "100%", appearance: "none", background: "var(--ink-2)",
-          border: "1px solid var(--glass-stroke)", borderRadius: 10, padding: "10px 36px 10px 12px",
+          width: "100%", appearance: "none",
+          background: success ? "color-mix(in oklab, var(--neon-lime) 10%, transparent)"
+                    : invalid ? "color-mix(in oklab, var(--neon-pink) 10%, transparent)" : "var(--ink-2)",
+          border: `1px solid ${success ? "var(--neon-lime)" : invalid ? "var(--neon-pink)" : "var(--glass-stroke)"}`,
+          borderRadius: 10, padding: "10px 36px 10px 12px",
           color: value ? "var(--fg-1)" : "var(--fg-4)",
           fontFamily: "var(--font-ui)", fontSize: 14, cursor: "pointer", outline: "none",
         }}>
@@ -667,7 +674,82 @@ function Select({ label, value, onChange, options, placeholder = "Chọn…", no
   );
 }
 
+// --------------------------------------------------------------------
+// TagSelect — dropdown-add + removable pills multi-select.
+//
+// `value` is an array of selected ids (selection order preserved). The
+// dropdown lists only options not yet selected; picking one appends its
+// id and resets the dropdown back to the placeholder. Each selected id
+// renders as a removable pill (label + ×). Visual idiom mirrors Select
+// (dropdown capsule) and the neon-accent pill primitives (FilterChip /
+// multipill).
+// --------------------------------------------------------------------
+function TagSelect({ label, value = [], onChange, options = [], placeholder = "Thêm…", color = "cyan" }) {
+  const c = `var(--neon-${color})`;
+  const selected = Array.isArray(value) ? value : [];
+  const optById = new Map(options.map(o => [o.value, o]));
+  const available = options.filter(o => !selected.includes(o.value));
+  const add = (id) => { if (id && !selected.includes(id)) onChange && onChange([...selected, id]); };
+  const remove = (id) => onChange && onChange(selected.filter(v => v !== id));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {label && <label style={{
+        fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em",
+        textTransform: "uppercase", color: "var(--fg-3)",
+      }}>{label}</label>}
+      <div style={{ position: "relative" }}>
+        <select value="" onChange={e => { add(e.target.value); }}
+                disabled={available.length === 0}
+                style={{
+          width: "100%", appearance: "none", background: "var(--ink-2)",
+          border: "1px solid var(--glass-stroke)", borderRadius: 10, padding: "10px 36px 10px 12px",
+          color: "var(--fg-4)",
+          fontFamily: "var(--font-ui)", fontSize: 14,
+          cursor: available.length === 0 ? "not-allowed" : "pointer", outline: "none",
+          opacity: available.length === 0 ? 0.5 : 1,
+        }}>
+          <option value="" disabled>{available.length === 0 ? "Đã chọn tất cả" : placeholder}</option>
+          {available.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        <Icon name="arrow-down" size={14}
+              style={{ position: "absolute", right: 12, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", color: "var(--fg-3)" }}/>
+      </div>
+      {selected.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 2 }}>
+          {selected.map(id => {
+            const o = optById.get(id);
+            return (
+              <span key={id} style={{
+                display: "inline-flex", alignItems: "center", gap: 6,
+                padding: "5px 8px 5px 11px", borderRadius: 999,
+                background: `color-mix(in oklab, ${c} 14%, transparent)`,
+                border: `1px solid ${c}`,
+                boxShadow: `0 0 12px color-mix(in oklab, ${c} 40%, transparent)`,
+                color: "var(--fg-1)",
+                fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 600,
+                whiteSpace: "nowrap",
+              }}>
+                {o ? o.label : id}
+                <button type="button" onClick={() => remove(id)} aria-label="Bỏ chọn"
+                        style={{
+                          background: "transparent", border: "none", padding: 0, margin: 0,
+                          display: "inline-flex", alignItems: "center", cursor: "pointer",
+                          color: "var(--fg-3)", transition: "color 140ms var(--ease-out)",
+                        }}
+                        onMouseEnter={e => e.currentTarget.style.color = "var(--fg-1)"}
+                        onMouseLeave={e => e.currentTarget.style.color = "var(--fg-3)"}>
+                  <Icon name="x" size={12}/>
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   Icon, Button, GlassCard, StatusChip, Chip, Avatar, Input, Progress, Sparkline, CountUp, STATUS_MAP,
-  PillTabs, FilterChip, DocSlot, PaymentPill, ProfilePill, ClassStatusPill, Select,
+  PillTabs, FilterChip, DocSlot, PaymentPill, ProfilePill, ClassStatusPill, Select, TagSelect,
 });

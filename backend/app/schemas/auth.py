@@ -5,9 +5,9 @@ canonical wire shapes consumed by the frontend data-loader.
 """
 
 import uuid
-from typing import Optional
+from typing import List, Optional
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 from app.models.user import User
 from app.utils.dates import iso_to_vn_datetime
@@ -32,9 +32,17 @@ class WireUser(BaseModel):
     phone: Optional[str]
     lastActive: Optional[str]  # "dd/mm/yyyy HH:MM:SS"
     active: bool
+    branchIds: List[str] = Field(default_factory=list)  # branch SLUGS (CTV many-to-many)
+    classIds: List[str] = Field(default_factory=list)   # class UUID strings (CTV many-to-many)
 
     @classmethod
-    def from_user(cls, u: User, branch_id_override: Optional[str] = None) -> "WireUser":
+    def from_user(
+        cls,
+        u: User,
+        branch_id_override: Optional[str] = None,
+        branch_ids: Optional[List[str]] = None,
+        class_ids: Optional[List[str]] = None,
+    ) -> "WireUser":
         """branch_id_override lets the caller pass a slug (`br-1` etc.)
         instead of the raw UUID — the Sidebar looks the value up in
         `D.getBranch(user.branchId)` against /api/branches which returns slugs.
@@ -57,8 +65,11 @@ class WireUser(BaseModel):
             phone=u.phone,
             lastActive=iso_to_vn_datetime(u.last_login_at),
             active=u.is_active,
+            branchIds=branch_ids or [],
+            classIds=class_ids or [],
         )
 
 
 class LoginResponse(BaseModel):
     user: WireUser
+    token: Optional[str] = None  # also returned in-body for native (Bearer) clients

@@ -1,0 +1,9 @@
+{
+  "appId": "vn.motogiathinh.ctv",
+  "appName": "Moto Gia Thịnh CTV",
+  "webDir": "www",
+  "server": { "androidScheme": "https" },
+  "plugins": {
+    "SplashScreen": { "launchShowDuration": 600, "backgroundColor": "#0b0d12" }
+  }
+}

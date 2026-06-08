@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     # Google Vision (optional OCR)
     GOOGLE_VISION_API_KEY: str = ""
 
+    # diachi.io — old→new Vietnamese address conversion (2025 admin reform).
+    # Optional key (buy a "Standard" plan, ~200k VND) lifts the free tier's
+    # 1-batch-per-3-minutes limit and enables complex merged addresses.
+    DIACHI_API_URL: str = "https://diachi.io/api/convert-batch"
+    DIACHI_API_KEY: str = ""
+
     # School
     SCHOOL_NAME: str = "Trường Dạy Lái Xe Moto Gia Thịnh"
     SCHOOL_ADDRESS: str = ""

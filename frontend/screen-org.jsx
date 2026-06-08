@@ -318,10 +318,22 @@ function AccountsTab({ onOpenPermissions }) {
   // EditRecordModal/RecordCreatorModal seed selects from options[0].id so
   // the first real branch is the default.
   const branchOpts = D.branches.map(b => ({ id: b.id, label: b.name }));
+  // Active classes only — collaborators are assigned to classes that are
+  // currently open / running (status derived in data-loader).
+  const activeClassOpts = D.classes
+    .filter(c => c.status === "đang mở" || c.status === "đang diễn ra")
+    .map(c => ({ value: c.id, label: c.code }));
   const accountCreateFields = [
     { id: "name",     label: "Họ tên",                  type: "text",   placeholder: "Nguyễn Văn A", fullWidth: true },
-    { id: "role",     label: "Vai trò",                 type: "select", options: [{ id: "staff", label: "Nhân viên" }, { id: "admin", label: "Admin" }] },
-    { id: "branchId", label: "Chi nhánh",               type: "select", options: branchOpts },
+    { id: "role",     label: "Vai trò",                 type: "select", options: [{ id: "staff", label: "Nhân viên" }, { id: "admin", label: "Admin" }, { id: "collaborator", label: "Cộng tác viên" }] },
+    { id: "branchId", label: "Chi nhánh",               type: "select", options: branchOpts,
+      showIf: v => v.role !== "collaborator" },
+    { id: "branchIds", label: "Chi nhánh được giao",    type: "tagselect",
+      options: D.branches.map(b => ({ value: b.id, label: b.name })),
+      showIf: v => v.role === "collaborator" },
+    { id: "classIds",  label: "Lớp được giao",          type: "tagselect",
+      options: activeClassOpts,
+      showIf: v => v.role === "collaborator" },
     { id: "email",    label: "Tên đăng nhập (Email)",   type: "text",   placeholder: "you@motogiathinh.vn" },
     { id: "phone",    label: "Số điện thoại",           type: "phone",  placeholder: "090 123 4567" },
     { id: "password", label: "Mật khẩu tạm thời",       type: "password", placeholder: "Mật khẩu mới",
@@ -379,8 +391,8 @@ function AccountsTab({ onOpenPermissions }) {
               <Avatar name={a.name} size={30}/>
               <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)" }}>{a.name}</span>
             </div>
-            <Chip color={a.role === "admin" ? "var(--neon-violet)" : "var(--fg-1)"}>
-              {a.role === "admin" ? "Admin" : "Nhân viên"}
+            <Chip color={a.role === "admin" ? "var(--neon-violet)" : a.role === "collaborator" ? "var(--neon-cyan)" : "var(--fg-1)"}>
+              {a.role === "admin" ? "Admin" : a.role === "collaborator" ? "Cộng tác viên" : "Nhân viên"}
             </Chip>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-2)" }}>{a.email}</span>
             <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-2)" }}>{b ? b.name : "—"}</span>
@@ -1166,7 +1178,7 @@ function ActivityTab() {
               }} title={log.action}>{actionLabelVi(log.action, verbLabel)}</span>
               <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--fg-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{humanizeTarget(log)}</span>
             </div>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", textAlign: "right" }}>{user.role === "admin" ? "Admin" : user.role === "system" ? "Hệ thống" : "Nhân viên"}</span>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", textAlign: "right" }}>{user.role === "admin" ? "Admin" : user.role === "system" ? "Hệ thống" : user.role === "collaborator" ? "Cộng tác viên" : "Nhân viên"}</span>
           </div>
         );
       })}
@@ -1256,6 +1268,24 @@ function MoreMenu({ items, stopPropagation = true }) {
 }
 
 // --------------------------------------------------------------------
+// Field-driven form helpers (shared by RecordCreatorModal/EditRecordModal).
+//   fieldVisible — a field with `showIf(values) === false` is hidden.
+//   stripHidden  — drop hidden fields' ids from the submitted payload so
+//                  conditional values (e.g. branchId on a collaborator)
+//                  never leak to the backend.
+// --------------------------------------------------------------------
+function fieldVisible(f, values) {
+  return typeof f.showIf === "function" ? !!f.showIf(values) : true;
+}
+function stripHidden(draft, fields) {
+  const out = { ...draft };
+  for (const f of fields || []) {
+    if (!fieldVisible(f, draft)) delete out[f.id];
+  }
+  return out;
+}
+
+// --------------------------------------------------------------------
 // EditRecordModal — slim wrapper around the RecordCreatorModal field
 // renderer, but seeded from `initialValues` and emitting onSave(patch).
 // Used by every "Sửa" action across the Tổ chức tabs.
@@ -1268,6 +1298,7 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
       seed[f.id] = v != null ? v
                  : f.type === "select"   ? (f.options?.[0]?.id ?? "")
                  : f.type === "multipill" ? []
+                 : f.type === "tagselect" ? []
                  : "";
     }
     return seed;
@@ -1290,7 +1321,7 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
     busyRef.current = true;
     try {
       setBusy(true); setErr(null);
-      await onSave?.(draft);
+      await onSave?.(stripHidden(draft, fields));
       onClose();
     } catch (e) {
       setErr(e?.message || String(e));
@@ -1320,8 +1351,8 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
           flexDirection: useGrid ? undefined : "column",
           gap: 12,
         }}>
-          {(fields || []).map((f) => {
-            const span = f.fullWidth || f.type === "multipill" ? 2 : 1;
+          {(fields || []).filter(f => fieldVisible(f, draft)).map((f) => {
+            const span = f.fullWidth || f.type === "multipill" || f.type === "tagselect" ? 2 : 1;
             const node = f.type === "select"
               ? <Select label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)}
@@ -1332,6 +1363,12 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
                                        options={f.options}
                                        onChange={(v) => set(f.id, v)}
                                        color={f.color || "cyan"}/>
+              : f.type === "tagselect"
+              ? <TagSelect label={f.label} value={draft[f.id]}
+                           options={f.options}
+                           onChange={(v) => set(f.id, v)}
+                           placeholder={f.placeholder || "Thêm…"}
+                           color={f.color || "cyan"}/>
               : <Input  label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)} placeholder={f.placeholder}
                         type={f.type === "password" ? "password" : "text"}
@@ -1480,6 +1517,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
     for (const f of fields || []) {
       seed[f.id] = f.type === "select"   ? (f.options?.[0]?.id ?? "")
                 : f.type === "multipill" ? []
+                : f.type === "tagselect" ? []
                 : "";
     }
     return seed;
@@ -1499,7 +1537,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
     busyRef.current = true;
     try {
       setBusy(true); setErr(null);
-      await onCreate?.(draft);
+      await onCreate?.(stripHidden(draft, fields));
       onClose();
     } catch (e) {
       setErr(e?.message || String(e));
@@ -1534,9 +1572,9 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
           flexDirection: useGrid ? undefined : "column",
           gap: 12,
         }}>
-          {(fields || []).map((f) => {
-            // multipill rows always span the full width — pills wrap naturally.
-            const span = f.fullWidth || f.type === "multipill" ? 2 : 1;
+          {(fields || []).filter(f => fieldVisible(f, draft)).map((f) => {
+            // multipill / tagselect rows always span the full width — pills wrap naturally.
+            const span = f.fullWidth || f.type === "multipill" || f.type === "tagselect" ? 2 : 1;
             const node = f.type === "select"
               ? <Select label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)}
@@ -1547,6 +1585,12 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
                                        options={f.options}
                                        onChange={(v) => set(f.id, v)}
                                        color={f.color || "cyan"}/>
+              : f.type === "tagselect"
+              ? <TagSelect label={f.label} value={draft[f.id]}
+                           options={f.options}
+                           onChange={(v) => set(f.id, v)}
+                           placeholder={f.placeholder || "Thêm…"}
+                           color={f.color || "cyan"}/>
               : <Input  label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)} placeholder={f.placeholder}
                         type={f.type === "password" ? "password" : "text"}

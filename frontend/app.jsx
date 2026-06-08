@@ -46,9 +46,12 @@ class ScreenErrorBoundary extends React.Component {
 function App() {
   // ThemeProvider wraps the whole app so theme toggles instantly
   // propagate to any component reading `useTheme()` / `useBranchTones()`.
+  // Collaborators (CTV) get the standalone vertical portal (GuestApp)
+  // instead of the admin shell entirely.
+  const isCtv = window.MGT_DATA.currentUser.role === "collaborator";
   return (
     <ThemeProvider>
-      <AppRoot/>
+      {isCtv ? <GuestApp/> : <AppRoot/>}
     </ThemeProvider>
   );
 }
@@ -56,6 +59,7 @@ function App() {
 function AppRoot() {
   const D = window.MGT_DATA;
   const isAdmin = D.can("dashboard", "r");  // admin-only pseudo-resource
+  const isCtv = D.currentUser.role === "collaborator";  // restricted web app
 
   // Re-render whenever data-loader fires 'mgt:datachanged' (after any
   // successful create/update/delete). The frozen screens read D.<arrays>
@@ -89,7 +93,8 @@ function AppRoot() {
   const unread = D.notifications.filter(n => !n.read).length;
 
   // Navigation helpers
-  const goTab = (id) => { setTab(id); setDetail(null); };
+  // CTV is locked to the "students" surface — ignore any nav to other tabs.
+  const goTab = (id) => { if (isCtv && id !== "students") return; setTab(id); setDetail(null); };
   const openStudent = (id, opts) => setDetail({ type: "student", id, ...(opts || {}) });
   const openPayment = (id) => setDetail({ type: "payment", id });
   const openClass   = (id) => { setTab("classes"); setDetail({ type: "class", id }); };

@@ -92,6 +92,7 @@ class AttendanceStatus(str, enum.Enum):
 class RoleName(str, enum.Enum):
     admin = "admin"
     staff = "staff"
+    collaborator = "collaborator"
 
 
 class LeadSource(str, enum.Enum):

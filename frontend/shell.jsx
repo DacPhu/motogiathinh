@@ -58,7 +58,12 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
 
       {/* Nav */}
       <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        {NAV_ITEMS.filter(it => it.id !== "dashboard" || window.MGT_DATA.can("dashboard", "r")).map(it => {
+        {NAV_ITEMS.filter(it => {
+          // Collaborators (CTV) get a restricted web app: only "Học viên"
+          // (view their students + add profiles). Staff/admin unchanged.
+          if (window.MGT_DATA.currentUser.role === "collaborator") return it.id === "students";
+          return it.id !== "dashboard" || window.MGT_DATA.can("dashboard", "r");
+        }).map(it => {
           const isActive = active === it.id;
           const showBadge = it.id === "notifications" && unreadCount > 0;
           return (
@@ -110,7 +115,7 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
         <Avatar name={user.name} size={32} />
         <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
           <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600, color: "var(--fg-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user.name}</span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--fg-3)" }}>{user.role === "admin" ? "Admin" : "Nhân viên"} · {branch.name}</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--fg-3)" }}>{user.role === "admin" ? "Admin" : user.role === "collaborator" ? "Cộng tác viên" : "Nhân viên"}{branch ? " · " + branch.name : ""}</span>
         </div>
       </button>
       </aside>
@@ -386,7 +391,7 @@ function CarGlyph({ size = 14 }) {
 // sticky wrapper, a fixed-positioned floating panel, etc). This keeps
 // the layering system simple: modals are always at the top, period.
 // --------------------------------------------------------------------
-function Modal({ open, onClose, title, subtitle, children, primaryAction, primaryLabel = "Lưu", primaryIcon = "check", width = 560, primaryDisabled, secondary, footerStart }) {
+function Modal({ open, onClose, title, subtitle, children, primaryAction, primaryLabel = "Lưu", primaryIcon = "check", width = 560, primaryDisabled, secondary, footerStart, footer }) {
   // Esc-to-dismiss: only attach while open. Inputs/textareas/selects
   // don't natively consume Escape in HTML (it's not a typing key), so
   // we close unconditionally — matches OS-level dialog behaviour.
@@ -425,11 +430,15 @@ function Modal({ open, onClose, title, subtitle, children, primaryAction, primar
           </div>
         )}
         {children}
-        <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>{footerStart || null}</div>
-          {secondary !== undefined ? secondary : <Button variant="ghost" onClick={onClose}>Hủy</Button>}
-          <Button variant="primary" onClick={primaryAction} icon={primaryIcon} disabled={primaryDisabled}>{primaryLabel}</Button>
-        </div>
+        {footer !== undefined ? (
+          <div style={{ paddingTop: 4 }}>{footer}</div>
+        ) : (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>{footerStart || null}</div>
+            {secondary !== undefined ? secondary : <Button variant="ghost" onClick={onClose}>Hủy</Button>}
+            <Button variant="primary" onClick={primaryAction} icon={primaryIcon} disabled={primaryDisabled}>{primaryLabel}</Button>
+          </div>
+        )}
       </div>
     </div>
   );

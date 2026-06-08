@@ -15,7 +15,7 @@ from sqlalchemy import select
 
 from app.core.ocr import extract_cccd_info
 from app.core.storage import upload_bytes
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser, accessible_class_ids, require_permission
 from app.models.branch import Branch
 from app.models.class_model import Class, ClassEnrollment
 from app.models.enums import GenderType, LicenseType, RoleName, StudentStatus
@@ -35,12 +35,20 @@ router = APIRouter(prefix="/students", tags=["students"])
 DEFAULT_FEES = {"A": 1995000, "A1": 565000}
 
 
+def _doc_url(s, col):
+    """Browser-fetchable /api/files path for a stored doc (the column holds the
+    internal MinIO URL; the served path is /api/files/students/<id>/<filename>)."""
+    v = getattr(s, col, None)
+    if not v:
+        return None
+    fn = str(v).rsplit("/", 1)[-1]
+    return f"/api/files/students/{s.id}/{fn}"
+
+
 def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None) -> dict:
     licence_raw = getattr(s, "loai_bang_lai", None)
     licence_val = licence_raw.value if hasattr(licence_raw, "value") else licence_raw
     licence = license_to_wire(licence_val)
-    parts = [getattr(s, "phuong_xa", None), getattr(s, "quan_huyen", None), getattr(s, "tinh_thanh", None)]
-    que_quan = ", ".join(p for p in parts if p)
     gender_val = s.gioi_tinh.value if hasattr(s.gioi_tinh, "value") else s.gioi_tinh
     return {
         "id": str(s.id),
@@ -51,7 +59,7 @@ def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None
         "gender": gender_to_wire(gender_val),
         "idNumber": s.cccd_number or "",
         "address": s.dia_chi or "",
-        "queQuan": que_quan,
+        "noiTamTru": getattr(s, "tinh_thanh", None) or "",
         "ngayCapCCCD": iso_to_vn_date(s.cccd_issued_date) or "",
         "noiCapCCCD": s.cccd_issued_place or "",
         "classId": (
@@ -66,9 +74,19 @@ def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None
         "branchId": slug_map.get(s.branch_id, str(s.branch_id) if s.branch_id else None),
         "createdAt": iso_to_vn_datetime(s.created_at) or "",
         "docs_cccd": bool(getattr(s, "cmnd_front_url", None)),
+        "docs_cccdBack": bool(getattr(s, "cmnd_back_url", None)),
+        "docs_cccdQR": bool(getattr(s, "docs_cccd_qr_url", None)),
         "docs_gksk": bool(getattr(s, "docs_gksk_url", None)),
         "docs_donDeNghi": bool(getattr(s, "docs_don_de_nghi_url", None)),
         "docs_the3x4": bool(getattr(s, "anh_the_url", None)),
+        "docs_bangLaiFront": bool(getattr(s, "docs_bang_lai_front_url", None)),
+        "docs_bangLaiBack": bool(getattr(s, "docs_bang_lai_back_url", None)),
+        "docs_cccd_url": _doc_url(s, "cmnd_front_url"),
+        "docs_cccdBack_url": _doc_url(s, "cmnd_back_url"),
+        "docs_cccdQR_url": _doc_url(s, "docs_cccd_qr_url"),
+        "docs_the3x4_url": _doc_url(s, "anh_the_url"),
+        "docs_bangLaiFront_url": _doc_url(s, "docs_bang_lai_front_url"),
+        "docs_bangLaiBack_url": _doc_url(s, "docs_bang_lai_back_url"),
         "notes": getattr(s, "ghi_chu", None),
     }
 
@@ -78,13 +96,52 @@ async def _slug_map(db) -> dict:
     return {b.id: (b.slug or str(b.id)) for b in res.scalars().all()}
 
 
+async def _student_accessible(db, current_user, student_id: uuid.UUID) -> bool:
+    """Admin → always. Collaborator → student enrolled in an assigned ACTIVE
+    class. Staff → student in the staff's branch (unchanged original behavior;
+    NOT active-gated)."""
+    if current_user.role == RoleName.admin:
+        return True
+    if current_user.role == RoleName.collaborator:
+        acc = await accessible_class_ids(db, current_user)
+        if not acc:
+            return False
+        res = await db.execute(
+            select(ClassEnrollment.id).where(
+                ClassEnrollment.student_id == student_id,
+                ClassEnrollment.class_id.in_(acc),
+                ClassEnrollment.deleted_at.is_(None),
+            ).limit(1)
+        )
+        return res.first() is not None
+    # staff: branch scoping, exactly as before
+    if not current_user.branch_id:
+        return False
+    s = await db.get(Student, student_id)
+    return bool(s) and s.branch_id == current_user.branch_id
+
+
 @router.get("")
 async def list_students(current_user: CurrentUser, db: DB):
     # No LIMIT — frontend's payments screen needs every student its payments
     # reference; capping orphans `payment.studentId → undefined` and crashes
     # screen-payments.jsx (s.totalFee on undefined).
     query = select(Student).where(Student.deleted_at.is_(None)).order_by(Student.created_at.desc())
-    if current_user.role != RoleName.admin and current_user.branch_id:
+    # Collaborator (CTV): only students enrolled in an assigned ACTIVE class.
+    # Staff: branch-scoped exactly as before (all classes). Admin: everything.
+    if current_user.role == RoleName.collaborator:
+        acc = await accessible_class_ids(db, current_user)
+        if not acc:
+            return []
+        enrolled_subq = (
+            select(ClassEnrollment.student_id)
+            .where(
+                ClassEnrollment.class_id.in_(acc),
+                ClassEnrollment.deleted_at.is_(None),
+            )
+        )
+        query = query.where(Student.id.in_(enrolled_subq))
+    elif current_user.role != RoleName.admin and current_user.branch_id:
         query = query.where(Student.branch_id == current_user.branch_id)
     result = await db.execute(query)
     slug_map = await _slug_map(db)
@@ -119,7 +176,7 @@ class StudentCreateForm(BaseModel):
     gender: Optional[str] = None
     idNumber: Optional[str] = None
     address: Optional[str] = None
-    queQuan: Optional[str] = None
+    noiTamTru: Optional[str] = None
     ngayCapCCCD: Optional[str] = None
     noiCapCCCD: Optional[str] = None
     classId: str
@@ -133,9 +190,13 @@ class StudentCreateForm(BaseModel):
 
 class StudentDocsFlags(BaseModel):
     cccd: bool = False
+    cccdBack: bool = False
+    cccdQR: bool = False
     gksk: bool = False
     donDeNghi: bool = False
     the3x4: bool = False
+    bangLaiFront: bool = False
+    bangLaiBack: bool = False
 
 
 class StudentCreateRequest(BaseModel):
@@ -159,8 +220,18 @@ async def create_student(
     cls = await db.get(Class, cls_uuid)
     if not cls:
         raise HTTPException(400, "invalid_classId")
-    if current_user.role != RoleName.admin and current_user.branch_id != cls.branch_id:
-        raise HTTPException(403, "wrong_branch")
+    # Collaborator (CTV) only: target class must be an assigned ACTIVE class.
+    # acc is None for admin/staff → no gate (staff unchanged from original).
+    acc = await accessible_class_ids(db, current_user)
+    if acc is not None and cls.id not in acc:
+        raise HTTPException(403, "class_not_accessible")
+    # Reject duplicate CCCD — a person has one CCCD, so this is GLOBAL (not branch-scoped).
+    if f.idNumber:
+        existing = await db.execute(
+            select(Student).where(Student.cccd_number == f.idNumber, Student.deleted_at.is_(None)).limit(1)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(409, "duplicate_cccd")
     # Resolve fee plan + promotion to compute totalFee
     fp = None
     if f.feePlanId:
@@ -191,7 +262,7 @@ async def create_student(
         cccd_issued_place=f.noiCapCCCD or None,
         so_dien_thoai=f.phone or "",
         dia_chi=f.address or None,
-        tinh_thanh=f.queQuan or None,
+        tinh_thanh=f.noiTamTru or None,
         loai_bang_lai=LicenseType(license_to_db(f.licence)),
         trang_thai=StudentStatus.active,
         ghi_chu=f.notes or None,
@@ -234,7 +305,7 @@ class StudentUpdateRequest(BaseModel):
     gender: Optional[str] = None
     idNumber: Optional[str] = None
     address: Optional[str] = None
-    queQuan: Optional[str] = None
+    noiTamTru: Optional[str] = None
     ngayCapCCCD: Optional[str] = None
     noiCapCCCD: Optional[str] = None
     licence: Optional[str] = None
@@ -257,8 +328,8 @@ async def update_student(
     except ValueError: raise HTTPException(400, "invalid_id")
     s = await db.get(Student, s_uuid)
     if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
+    if not await _student_accessible(db, current_user, s.id):
+        raise HTTPException(403, "class_not_accessible")
 
     fields = data.model_dump(exclude_unset=True)
     if "name" in fields:        s.ten_hoc_vien = fields["name"]
@@ -267,7 +338,7 @@ async def update_student(
     if "gender" in fields:      s.gioi_tinh = GenderType(gender_to_db(fields["gender"]) or "other")
     if "idNumber" in fields:    s.cccd_number = fields["idNumber"] or None
     if "address" in fields:     s.dia_chi = fields["address"] or None
-    if "queQuan" in fields:     s.tinh_thanh = fields["queQuan"] or None
+    if "noiTamTru" in fields:   s.tinh_thanh = fields["noiTamTru"] or None
     if "ngayCapCCCD" in fields: s.cccd_issued_date = vn_to_iso_date(fields["ngayCapCCCD"])
     if "noiCapCCCD" in fields:  s.cccd_issued_place = fields["noiCapCCCD"] or None
     if "licence" in fields:     s.loai_bang_lai = LicenseType(license_to_db(fields["licence"]))
@@ -304,7 +375,7 @@ async def update_student(
 
 
 # ── Docs upload / delete ────────────────────────────────────────────────────
-DOC_KEYS = {"cccd", "gksk", "donDeNghi", "the3x4"}
+DOC_KEYS = {"cccd", "cccdBack", "cccdQR", "gksk", "donDeNghi", "the3x4", "bangLaiFront", "bangLaiBack"}
 
 
 @router.post("/{student_id}/docs/{key}", status_code=201)
@@ -322,8 +393,8 @@ async def upload_doc(
     except ValueError: raise HTTPException(400, "invalid_id")
     s = await db.get(Student, s_uuid)
     if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
+    if not await _student_accessible(db, current_user, s.id):
+        raise HTTPException(403, "class_not_accessible")
     content = await file.read()
     if len(content) > 8 * 1024 * 1024:
         raise HTTPException(400, "file_too_large")
@@ -331,9 +402,13 @@ async def upload_doc(
     object_key = f"students/{student_id}/{key}-{int(datetime.now(timezone.utc).timestamp()*1000)}.{ext}"
     url = upload_bytes(object_key, content, content_type=file.content_type or "application/octet-stream")
     if key == "cccd":      s.cmnd_front_url = url
+    elif key == "cccdBack": s.cmnd_back_url = url
+    elif key == "cccdQR":  s.docs_cccd_qr_url = url
     elif key == "gksk":    s.docs_gksk_url = url
     elif key == "donDeNghi": s.docs_don_de_nghi_url = url
     elif key == "the3x4":  s.anh_the_url = url
+    elif key == "bangLaiFront": s.docs_bang_lai_front_url = url
+    elif key == "bangLaiBack":  s.docs_bang_lai_back_url = url
     await db.commit()
     return {"ok": True, "key": key, "url": url, "size": len(content)}
 
@@ -352,12 +427,16 @@ async def delete_doc(
     except ValueError: raise HTTPException(400, "invalid_id")
     s = await db.get(Student, s_uuid)
     if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
+    if not await _student_accessible(db, current_user, s.id):
+        raise HTTPException(403, "class_not_accessible")
     if key == "cccd":      s.cmnd_front_url = None
+    elif key == "cccdBack": s.cmnd_back_url = None
+    elif key == "cccdQR":  s.docs_cccd_qr_url = None
     elif key == "gksk":    s.docs_gksk_url = None
     elif key == "donDeNghi": s.docs_don_de_nghi_url = None
     elif key == "the3x4":  s.anh_the_url = None
+    elif key == "bangLaiFront": s.docs_bang_lai_front_url = None
+    elif key == "bangLaiBack":  s.docs_bang_lai_back_url = None
     await db.commit()
     return {"ok": True, "key": key}
 
@@ -368,6 +447,9 @@ async def get_student_payments(student_id: str, current_user: CurrentUser, db: D
     student's full payment ledger (tuition + rental)."""
     try: s_uuid = uuid.UUID(student_id)
     except ValueError: raise HTTPException(400, "invalid_id")
+    # Don't leak existence of inaccessible students to non-admins.
+    if not await _student_accessible(db, current_user, s_uuid):
+        raise HTTPException(404, "not_found")
     from app.models.payment import Payment
     from app.utils.dates import method_to_wire
     result = await db.execute(
