@@ -38,5 +38,10 @@ celery.conf.update(
             "task": "app.tasks.notifications.recompute_auto_notifications",
             "schedule": crontab(minute="*/5"),
         },
+        # Daily offsite database backup → R2 (03:30 Asia/Ho_Chi_Minh).
+        "backup-database-to-r2": {
+            "task": "app.tasks.backup.backup_database_to_r2",
+            "schedule": crontab(hour=3, minute=30),
+        },
     },
 )

@@ -1,12 +1,19 @@
-"""Celery tasks: replicate uploaded files to Cloudflare R2 (offsite backup).
+"""Celery tasks: replicate uploaded files + the database to Cloudflare R2.
 
-Enqueued by `app.core.storage._enqueue_r2_backup` after each MinIO upload; no-op
-unless R2 is enabled + configured (`storage.r2_enabled()`). `backfill_r2` seeds
-the backup for files that already existed in MinIO before R2 was turned on.
+- replicate_to_r2 / backfill_r2 — offsite copies of uploaded files (enqueued by
+  app.core.storage after each MinIO upload; backfill seeds pre-existing files).
+- backup_database_to_r2 — scheduled pg_dump of Postgres → R2 (Celery beat, daily).
+
+All are no-ops unless R2 is enabled + configured (storage.r2_enabled()).
 """
 import logging
+import os
+import subprocess
+from datetime import datetime, timezone
+from urllib.parse import unquote, urlparse
 
 from app.celery_app import celery
+from app.config import settings
 from app.core import storage
 
 logger = logging.getLogger(__name__)
@@ -37,3 +44,64 @@ def backfill_r2():
         n += 1
     logger.info("R2 backfill: enqueued %d objects", n)
     return n
+
+
+@celery.task(
+    name="app.tasks.backup.backup_database_to_r2",
+    bind=True,
+    max_retries=3,
+    default_retry_delay=300,
+)
+def backup_database_to_r2(self):
+    """pg_dump the Postgres DB and upload it to R2 (offsite). Scheduled daily.
+
+    No-op if R2 isn't configured. Writes a compressed custom-format dump to
+    db-backups/<db>-<UTC-timestamp>.dump in R2; restore with `pg_restore`.
+    """
+    if not storage.r2_enabled():
+        logger.warning("R2 not enabled; skipping database backup")
+        return None
+
+    # DATABASE_URL is an asyncpg URL; pg_dump wants plain libpq params.
+    raw = (
+        settings.DATABASE_URL
+        .replace("+asyncpg", "")
+        .replace("+psycopg2", "")
+        .replace("+psycopg", "")
+    )
+    u = urlparse(raw)
+    dbname = (u.path or "/").lstrip("/")
+    env = dict(os.environ)
+    if u.password:
+        env["PGPASSWORD"] = unquote(u.password)
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    key = f"db-backups/{dbname}-{ts}.dump"
+    tmp = f"/tmp/{dbname}-{ts}.dump"
+    try:
+        subprocess.run(
+            [
+                "pg_dump", "-Fc",
+                "-h", u.hostname or "db",
+                "-p", str(u.port or 5432),
+                "-U", unquote(u.username or "postgres"),
+                "-d", dbname,
+                "-f", tmp,
+            ],
+            check=True,
+            env=env,
+            capture_output=True,
+        )
+        storage.r2_upload_file(key, tmp, content_type="application/octet-stream")
+        size = os.path.getsize(tmp)
+        logger.info("DB backup uploaded to R2: %s (%d bytes)", key, size)
+        return {"key": key, "bytes": size}
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
+        logger.error("pg_dump failed (rc=%s): %s", exc.returncode, stderr)
+        raise self.retry(exc=exc)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass

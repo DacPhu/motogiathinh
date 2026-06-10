@@ -102,6 +102,20 @@ def iter_primary_keys():
             yield obj["Key"]
 
 
+def r2_upload_file(key: str, path: str, content_type: str = "application/octet-stream") -> str:
+    """Upload a local file to R2 under `key` (used for DB dumps). Returns the key.
+
+    Uses boto3's managed transfer (multipart, streamed from disk) so large dumps
+    don't load fully into memory.
+    """
+    if not r2_enabled():
+        raise RuntimeError("R2 is not enabled/configured")
+    _get_r2_client().upload_file(
+        path, settings.R2_BUCKET_NAME, key, ExtraArgs={"ContentType": content_type}
+    )
+    return key
+
+
 # -----------------------------------------------------------------------------
 
 def _ensure_bucket(client):
