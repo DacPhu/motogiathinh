@@ -1,8 +1,9 @@
 name: Build mobile apps
 
 # Builds the Capacitor CTV app for Android (sideloadable debug APK) and iOS
-# (unsigned simulator build — proves it compiles; a signed .ipa needs an Apple
-# Developer cert + provisioning profile, not set up yet).
+# (unsigned simulator build — proves it compiles). This is the always-on,
+# secret-free push check. For a SIGNED, on-device ad-hoc .ipa, see the separate
+# manual workflow ios-adhoc.yml (+ docs/ios-adhoc-build.md for Apple setup).
 #
 # Native projects (android/, ios/) are gitignored, so CI regenerates them with
 # `cap add` from the committed web source + config each run.

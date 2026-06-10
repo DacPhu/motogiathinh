@@ -1,0 +1,222 @@
+name: Build iOS ad-hoc IPA
+
+# Builds a SIGNED ad-hoc .ipa of the Capacitor CTV app, installable on the
+# specific devices whose UDIDs are baked into the provisioning profile
+# (distribution outside the App Store).
+#
+# Manual-only (workflow_dispatch) — it needs signing secrets and a heavier macOS
+# build, so it does NOT run on every push. The unsigned simulator compile-check
+# in mobile-build.yml stays as the always-on push check.
+#
+# Native ios/ is gitignored and regenerated here via `cap add`, so signing is
+# applied at build/export time (command-line build settings + ExportOptions.plist),
+# never baked into the disposable Xcode project.
+#
+# REQUIRED SECRETS (see docs/ios-adhoc-build.md for how to create each):
+#   IOS_DIST_CERT_P12_BASE64  — base64 of the Apple Distribution cert + private key (.p12)
+#   IOS_DIST_CERT_PASSWORD    — the .p12 export password
+#   IOS_ADHOC_PROFILE_BASE64  — base64 of the ad-hoc .mobileprovision
+#   IOS_TEAM_ID               — 10-char Apple Team ID
+#   KEYCHAIN_PASSWORD         — any throwaway string for the temporary build keychain
+
+on:
+  workflow_dispatch:
+    inputs:
+      marketing_version:
+        description: 'Marketing version (CFBundleShortVersionString), e.g. 1.0'
+        required: false
+        default: '1.0'
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE_ID: vn.motogiathinh.ctv
+
+jobs:
+  ios-adhoc:
+    name: iOS (signed ad-hoc IPA)
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      # Fail fast with an actionable message if the signing secrets aren't set,
+      # instead of a cryptic keychain/codesign error deep in the build.
+      - name: Preflight — verify signing secrets are present
+        shell: bash
+        working-directory: .
+        env:
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_ADHOC_PROFILE_BASE64: ${{ secrets.IOS_ADHOC_PROFILE_BASE64 }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          missing=()
+          for s in IOS_DIST_CERT_P12_BASE64 IOS_DIST_CERT_PASSWORD IOS_ADHOC_PROFILE_BASE64 IOS_TEAM_ID KEYCHAIN_PASSWORD; do
+            if [ -z "${!s}" ]; then missing+=("$s"); fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing required secret(s): ${missing[*]}"
+            echo "These have not been added to this repo's Actions secrets yet."
+            echo "Follow docs/ios-adhoc-build.md to create the Apple signing material and set them."
+            exit 1
+          fi
+          echo "All required signing secrets are present."
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps + build web bundle
+        run: |
+          npm install
+          npm run build
+
+      - name: Add + sync iOS + patch Info.plist
+        run: |
+          npx cap add ios
+          npx cap sync ios
+          node patch-native.mjs
+
+      - name: pod install
+        working-directory: mobile/ios/App
+        run: pod install
+
+      - name: Import signing certificate & provisioning profile
+        shell: bash
+        env:
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_ADHOC_PROFILE_BASE64: ${{ secrets.IOS_ADHOC_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
+          PROFILE_PATH="$RUNNER_TEMP/adhoc.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          # Decode secrets to files (GitHub's documented macOS-runner recipe).
+          echo -n "$IOS_DIST_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+          echo -n "$IOS_ADHOC_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+
+          # Throwaway keychain so nothing persists on the runner.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the distribution cert + private key; allow codesign to use it
+          # non-interactively (set-key-partition-list is required on modern macOS).
+          security import "$CERT_PATH" -P "$IOS_DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          # Install the provisioning profile under its own UUID; extract its Name
+          # (used by ExportOptions + the archive's PROVISIONING_PROFILE_SPECIFIER)
+          # so the profile name is never a hand-typed secret.
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/pp.plist"
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/pp.plist")
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/pp.plist")
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          cp "$PROFILE_PATH" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "Imported profile: '$PROFILE_NAME' ($PROFILE_UUID)"
+
+      - name: Write ExportOptions.plist
+        shell: bash
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>ad-hoc</string>
+            <key>teamID</key>
+            <string>${IOS_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+            <key>compileBitcode</key>
+            <false/>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>destination</key>
+            <string>export</string>
+          </dict>
+          </plist>
+          PLIST
+          echo "Wrote $RUNNER_TEMP/ExportOptions.plist:"
+          cat "$RUNNER_TEMP/ExportOptions.plist"
+
+      - name: Archive (Release, manual ad-hoc signing)
+        working-directory: mobile/ios/App
+        shell: bash
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -destination 'generic/platform=iOS' \
+            archive \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            MARKETING_VERSION="$MARKETING_VERSION"
+
+      - name: Export ad-hoc .ipa
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/ipa" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          # Rename the scheme-named output (App.ipa) to a friendly artifact name.
+          shopt -s nullglob
+          ipas=("$RUNNER_TEMP/ipa/"*.ipa)
+          if [ ${#ipas[@]} -eq 0 ]; then echo "::error::exportArchive produced no .ipa"; exit 1; fi
+          mv "${ipas[0]}" "$RUNNER_TEMP/ipa/MotoGiaThinhCTV-adhoc.ipa"
+          ls -la "$RUNNER_TEMP/ipa"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motogiathinh-ctv-adhoc-ipa
+          path: |
+            ${{ runner.temp }}/ipa/*.ipa
+            ${{ runner.temp }}/ipa/DistributionSummary.plist
+            ${{ runner.temp }}/ipa/Packaging.log
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean up keychain
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi

@@ -61,6 +61,13 @@ npx cap open ios             # → Xcode → run, or export .ipa for Sideloadly
 photo-library usage strings are injected by **`patch-native.mjs`** (a fresh
 `cap add ios` does NOT include them — without them iOS crashes on camera access).
 
+### Signed ad-hoc IPA (CI)
+To get a signed `.ipa` installable on real (registered) devices without the App Store, run the
+**Build iOS ad-hoc IPA** GitHub Actions workflow (`.github/workflows/ios-adhoc.yml`). The one-time
+Apple setup — Developer Program, distribution certificate, ad-hoc provisioning profile, and the five
+GitHub secrets it needs — is documented step-by-step in
+[`../docs/ios-adhoc-build.md`](../docs/ios-adhoc-build.md).
+
 ## Notes / known follow-ups
 - `src/config.js` API base is a placeholder until the backend is deployed.
 - Login uses the web overlay (themed) for now; a native-styled login is a nice-to-have.
