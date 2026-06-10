@@ -40,6 +40,15 @@ class Settings(BaseSettings):
     S3_SECRET_KEY: str = "minio_secret"
     S3_USE_SSL: bool = False
 
+    # Cloudflare R2 — offsite backup of uploads (async via Celery). Off by default;
+    # set R2_ENABLED=true + fill creds (server .env) to replicate every upload to R2
+    # and enable R2 read-fallback when MinIO misses a file.
+    R2_ENABLED: bool = False
+    R2_ENDPOINT: str = ""        # https://<account_id>.r2.cloudflarestorage.com
+    R2_ACCESS_KEY: str = ""
+    R2_SECRET_KEY: str = ""
+    R2_BUCKET_NAME: str = ""
+
     # Email
     SMTP_HOST: str = "smtp.mailgun.org"
     SMTP_PORT: int = 587
