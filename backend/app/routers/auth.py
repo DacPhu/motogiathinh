@@ -16,11 +16,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
+    from app.config import settings
     response.set_cookie(
         key=SESSION_COOKIE,
         value=token,
         httponly=True,
         samesite="lax",
+        secure=not settings.DEBUG,
         max_age=SESSION_TTL_DAYS * 24 * 3600,
         path="/",
     )
