@@ -22,8 +22,8 @@ for (const f of JSX) {
   console.log("compiled", f);
 }
 
-// 3) copy plain JS / CSS as-is
-for (const f of ["data-loader.js", "colors_and_type.css"]) {
+// 3) copy plain JS / CSS as-is (qr-capturer.js = live QR scanner, same as web)
+for (const f of ["data-loader.js", "colors_and_type.css", "qr-capturer.js"]) {
   fs.copyFileSync(path.join(FE, f), path.join(WWW, f));
 }
 // 4) copy native seam
@@ -72,6 +72,7 @@ const html = `<!DOCTYPE html>
   <script src="lib/react-dom.production.min.js"></script>
   <script src="config.js"></script>
   <script src="native-bridge.js"></script>
+  <script src="qr-capturer.js"></script>
   <script src="data-loader.js"></script>
   <script src="atoms.js"></script>
   <script src="shell.js"></script>

@@ -253,7 +253,7 @@ function GuestStudentList({ students, onOpen }) {
         }}
         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--neon-cyan)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--glass-stroke)"; }}>
-          <Avatar name={s.name} size={40}/>
+          <Avatar name={s.name} size={40} src={s.docs_the3x4_url || null}/>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontFamily: "var(--font-ui)", fontSize: 14, fontWeight: 600, color: "var(--fg-1)",
                           whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.name}</div>
@@ -293,19 +293,18 @@ function GuestStudentDetail({ student, onBack }) {
 
   const scanQr = async (file) => {
     if (!file) return;
-    setQrBusy(true); setQrErr(null);
+    // Clear old image immediately so user sees processing state cleanly.
+    setNewFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
+    setQrBusy(true); setQrErr(null); setQrInfo(null);
     try {
       const out = await window.MGT_QR.scanFile(file);
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
-      // Convert the old (pre-2025-reform) address to its new form before use.
       if (out.fields.address && D.api && D.api.convertAddress) {
         try { const c = await D.api.convertAddress(out.fields.address); if (c && c.converted) out.fields.address = c.converted; } catch (e) {}
       }
       setQrInfo(out.fields);
       setNewFiles(prev => ({ ...prev, cccdQR: file }));
     } catch (e) {
-      setQrInfo(null);
-      setNewFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
       setQrErr("QR chưa rõ. Hãy chụp rõ hơn.");
     } finally { setQrBusy(false); }
   };
@@ -340,7 +339,7 @@ function GuestStudentDetail({ student, onBack }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ padding: "18px 16px", borderRadius: 16, background: "var(--glass-2)",
                     border: "1px solid var(--glass-stroke)", display: "flex", alignItems: "center", gap: 14 }}>
-        <Avatar name={student.name} size={56} glow/>
+        <Avatar name={student.name} size={56} glow src={student.docs_the3x4_url || null}/>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 600, color: "var(--fg-1)",
                         letterSpacing: "-0.02em", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{student.name}</div>
@@ -463,11 +462,12 @@ function GuestAddStudentModal({ open, onClose }) {
 
   const scanQr = async (file) => {
     if (!file) return;
+    // Clear old QR image immediately so user sees processing state cleanly.
+    setDocFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
     setQrBusy(true); setQrErr(null);
     try {
       const out = await window.MGT_QR.scanFile(file);
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
-      // Convert the old (pre-2025-reform) address to its new form before use.
       if (out.fields.address && D.api && D.api.convertAddress) {
         try { const c = await D.api.convertAddress(out.fields.address); if (c && c.converted) out.fields.address = c.converted; } catch (e) {}
       }
@@ -476,10 +476,7 @@ function GuestAddStudentModal({ open, onClose }) {
       setDocFiles(prev => ({ ...prev, cccdQR: file }));
       setDupErr(isDuplicateCccd(out.fields.idNumber) ? "CCCD này đã có hồ sơ trong hệ thống." : null);
     } catch (e) {
-      // Failed scan → clear only the QR-derived fields (name + QR data + the
-      // QR image); keep manually-entered SĐT/hạng/lớp and the other photos.
       setQrInfo(null); setName(""); setDupErr(null);
-      setDocFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
       setQrErr("QR chưa rõ — hãy chụp lại ảnh rõ mã QR.");
     } finally { setQrBusy(false); }
   };

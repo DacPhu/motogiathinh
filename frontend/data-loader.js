@@ -362,19 +362,31 @@
 <button type="submit">Đăng nhập</button><div class="err"></div></form>`;
       root.appendChild(overlay);
       const form = overlay.querySelector('form'), err = overlay.querySelector('.err'), btn = overlay.querySelector('button');
+      // Auto-fill saved credentials on native (set by native-bridge.js from Preferences).
+      if (window.MGT_CREDS) {
+        const ef = form.querySelector('input[name=email]'), pf = form.querySelector('input[name=password]');
+        if (ef && window.MGT_CREDS.email) ef.value = window.MGT_CREDS.email;
+        if (pf && window.MGT_CREDS.password) pf.value = window.MGT_CREDS.password;
+      }
       form.addEventListener('submit', async (e) => {
         e.preventDefault(); err.style.display = 'none'; btn.disabled = true;
         const fd = new FormData(form);
+        const email = fd.get('email'), password = fd.get('password');
         try {
-          const out = await api('/auth/login', { method: 'POST', body: { email: fd.get('email'), password: fd.get('password') } });
-          if (out && out.token) { window.MGT_TOKEN = out.token; try { window.MGT_SAVE_TOKEN && await window.MGT_SAVE_TOKEN(out.token); } catch (e3) {} }
+          const out = await api('/auth/login', { method: 'POST', body: { email: email, password: password } });
+          if (out && out.token) {
+            window.MGT_TOKEN = out.token;
+            try { window.MGT_SAVE_TOKEN && await window.MGT_SAVE_TOKEN(out.token); } catch (e3) {}
+            try { window.MGT_SAVE_CREDS && await window.MGT_SAVE_CREDS(email, password); } catch (e3) {}
+          }
           overlay.remove(); style.remove(); resolve(out.user);
         } catch (e2) {
           err.textContent = /401/.test(String(e2.message)) ? 'Email hoặc mật khẩu không đúng.' : String(e2.message);
           err.style.display = 'block'; btn.disabled = false;
         }
       });
-      overlay.querySelector('input[name=email]').focus();
+      const firstEmpty = form.querySelector('input[name=email]').value ? form.querySelector('input[name=password]') : form.querySelector('input[name=email]');
+      if (firstEmpty) firstEmpty.focus();
     });
   }
 

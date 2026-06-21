@@ -17,7 +17,7 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
 
 
-SESSION_TTL_DAYS = 14
+SESSION_TTL_DAYS = 3650  # ~10 years — mobile tokens never expire
 
 
 def create_session_token(subject: str, role: str, branch_id: str | None = None) -> str:

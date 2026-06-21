@@ -45,6 +45,9 @@ jobs:
           npx cap add android
           npx cap sync android
 
+      - name: Generate app icons
+        run: npx capacitor-assets generate --android
+
       - name: Build debug APK
         run: |
           cd android
@@ -80,6 +83,9 @@ jobs:
           npx cap add ios
           npx cap sync ios
           node patch-native.mjs
+
+      - name: Generate app icons
+        run: npx capacitor-assets generate --ios
 
       - name: pod install
         run: |

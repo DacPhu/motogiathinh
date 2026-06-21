@@ -329,7 +329,7 @@ function RentVehicleModal({ open, onClose, defaultVehicleId, defaultStudentId })
           {chosenStudent ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
                           background: "var(--ink-2)", border: "1px solid var(--glass-stroke)", borderRadius: 10 }}>
-              <Avatar name={chosenStudent.name} size={28}/>
+              <Avatar name={chosenStudent.name} size={28} src={chosenStudent.docs_the3x4_url || null}/>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)" }}>{chosenStudent.name}</div>
                 <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-3)" }}>{chosenStudent.maHV} · {chosenStudent.phone || "—"}</div>
@@ -355,7 +355,7 @@ function RentVehicleModal({ open, onClose, defaultVehicleId, defaultStudentId })
                                   borderRadius: 8, cursor: "pointer", fontFamily: "var(--font-ui)", fontSize: 13 }}
                          onMouseEnter={(e) => e.currentTarget.style.background = "var(--glass-2)"}
                          onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
-                      <Avatar name={s.name} size={24}/>
+                      <Avatar name={s.name} size={24} src={s.docs_the3x4_url || null}/>
                       <div style={{ flex: 1 }}>
                         <div style={{ color: "var(--fg-1)", fontWeight: 600 }}>{s.name}</div>
                         <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)" }}>{s.maHV} · {s.phone || "—"}</div>

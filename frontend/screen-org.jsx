@@ -3,17 +3,10 @@
 //             giáo viên / phương tiện / nhật ký
 // ====================================================================
 
-// Password complexity checklist — mirrors backend/auth.js passwordPolicy.
-// Used by both the "Tạo tài khoản mới" dialog and PasswordResetModal so
-// the rules shown match what the server will accept on submit.
 const PASSWORD_CHECKS = [
-  { label: "≥ 8 ký tự",                       test: (v) => (v || "").length >= 8 },
-  { label: "≥ 1 chữ cái thường (a–z)",        test: (v) => /[a-z]/.test(v || "") },
-  { label: "≥ 1 chữ cái HOA (A–Z)",           test: (v) => /[A-Z]/.test(v || "") },
-  { label: "≥ 1 chữ số (0–9)",                test: (v) => /\d/.test(v || "") },
-  { label: "≥ 1 ký tự đặc biệt (!@#$…)",      test: (v) => /[!@#$%^&*()_+\-={}\[\]|\\:;"'<>,.?/~`]/.test(v || "") },
+  { label: "≥ 1 ký tự",  test: (v) => (v || "").length >= 1 },
 ];
-function pwOk(v) { return PASSWORD_CHECKS.every(c => c.test(v)); }
+function pwOk(v) { return (v || "").length >= 1; }
 
 function PasswordChecks({ value, checks = PASSWORD_CHECKS }) {
   return (
@@ -1149,7 +1142,7 @@ function reportWriteError(e, fallback = "Lỗi") {
   else if (/cannot_delete_last_admin/i.test(msg)) friendly = "Không thể xoá: đây là quản trị viên duy nhất còn lại.";
   else if (/branch_in_use/.test(msg)) friendly = "Không thể xóa: chi nhánh đang có lớp, học viên hoặc nhân viên.";
   else if (/in_use|in use|FK|FOREIGN/i.test(msg)) friendly = "Không thể xóa: bản ghi đang được tham chiếu.";
-  else if (/password_(too_short|too|weak|needs_)/.test(msg)) friendly = "Mật khẩu chưa đạt yêu cầu (≥ 8 ký tự · chữ thường · chữ HOA · số · ký tự đặc biệt).";
+  else if (/password_(too_short|too|weak|needs_)/.test(msg)) friendly = "Mật khẩu không hợp lệ.";
   else if (/forbidden|admin_only|requireAdmin/i.test(msg)) friendly = "Chỉ admin mới thực hiện được thao tác này.";
   else friendly = fallback + ": " + msg;
   if (window.MGT_TOAST) window.MGT_TOAST(friendly);

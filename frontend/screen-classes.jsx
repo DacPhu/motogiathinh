@@ -380,7 +380,7 @@ function ClassDetail({ classId, onBack, onOpenStudent, isAdmin }) {
             onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--fg-2)", fontWeight: 600 }}>{s.maHV}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <Avatar name={s.name} size={30}/>
+                <Avatar name={s.name} size={30} src={s.docs_the3x4_url || null}/>
                 <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                   <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)" }}>{s.name}</span>
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)" }}>{s.licence}</span>

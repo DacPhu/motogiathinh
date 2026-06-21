@@ -168,18 +168,42 @@ const GRADIENTS = [
   "linear-gradient(135deg, #8B6CFF, #FF3D8A)",
   "linear-gradient(135deg, #FFB020, #B6FF3C)",
 ];
-function Avatar({ name, size = 32, glow = false }) {
-  const initials = name.split(" ").slice(-2).map(w => w[0]).join("").toUpperCase();
-  const hash = name.split("").reduce((a, c) => a + c.charCodeAt(0), 0);
+function Avatar({ name, size = 32, glow = false, src = null }) {
+  const [imgUrl, setImgUrl] = React.useState(null);
+  const [imgErr, setImgErr] = React.useState(false);
+  React.useEffect(() => {
+    if (!src) { setImgUrl(null); setImgErr(false); return; }
+    setImgErr(false);
+    if (window.MGT_TOKEN) {
+      let alive = true, objUrl = null;
+      const full = /^https?:/.test(src) ? src : (window.MGT_API_BASE || "") + src;
+      fetch(full, { headers: { Authorization: "Bearer " + window.MGT_TOKEN } })
+        .then(r => r.ok ? r.blob() : Promise.reject("err"))
+        .then(b => { if (alive) { objUrl = URL.createObjectURL(b); setImgUrl(objUrl); } })
+        .catch(() => { if (alive) setImgErr(true); });
+      return () => { alive = false; if (objUrl) URL.revokeObjectURL(objUrl); };
+    }
+    setImgUrl(src);
+  }, [src]);
+  const initials = (name || "?").split(" ").slice(-2).map(w => w[0]).join("").toUpperCase();
+  const hash = (name || "").split("").reduce((a, c) => a + c.charCodeAt(0), 0);
   const grad = GRADIENTS[hash % GRADIENTS.length];
+  const base = {
+    width: size, height: size, borderRadius: 999, flexShrink: 0,
+    display: "inline-flex", alignItems: "center", justifyContent: "center",
+    boxShadow: glow ? "0 0 14px var(--neon-cyan-glow)" : "0 1px 3px rgba(0,0,0,0.4)",
+  };
+  if (imgUrl && !imgErr) {
+    return (
+      <span style={{ ...base, overflow: "hidden", background: grad }}>
+        <img src={imgUrl} alt="" onError={() => setImgErr(true)}
+             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}/>
+      </span>
+    );
+  }
   return (
-    <span style={{
-      width: size, height: size, borderRadius: 999,
-      background: grad, display: "inline-flex", alignItems: "center", justifyContent: "center",
-      fontFamily: "var(--font-display)", fontWeight: 600, fontSize: size * 0.38,
-      color: "var(--ink-0)", flexShrink: 0,
-      boxShadow: glow ? "0 0 14px var(--neon-cyan-glow)" : "0 1px 3px rgba(0,0,0,0.4)",
-    }}>{initials}</span>
+    <span style={{ ...base, background: grad, fontFamily: "var(--font-display)", fontWeight: 600,
+                   fontSize: size * 0.38, color: "var(--ink-0)" }}>{initials}</span>
   );
 }
 

@@ -20,17 +20,25 @@
   var P = Cap.Plugins || {};
   var TOKEN_KEY = "mgt_token";
 
-  // ── Token persistence + boot gate ────────────────────────────────
+  // ── Token + credential persistence ───────────────────────────────
+  var CREDS_KEY = "mgt_creds";
   window.MGT_SAVE_TOKEN = async function (t) {
     try { await P.Preferences.set({ key: TOKEN_KEY, value: t }); } catch (e) {}
   };
   window.MGT_CLEAR_TOKEN = async function () {
     try { await P.Preferences.remove({ key: TOKEN_KEY }); } catch (e) {}
   };
+  window.MGT_SAVE_CREDS = async function (email, password) {
+    try { await P.Preferences.set({ key: CREDS_KEY, value: JSON.stringify({ email: email, password: password }) }); } catch (e) {}
+  };
   window.MGT_BOOT_GATE = (async function () {
     try {
       var r = await P.Preferences.get({ key: TOKEN_KEY });
       if (r && r.value) window.MGT_TOKEN = r.value;
+    } catch (e) {}
+    try {
+      var c = await P.Preferences.get({ key: CREDS_KEY });
+      if (c && c.value) { var parsed = JSON.parse(c.value); window.MGT_CREDS = parsed; }
     } catch (e) {}
   })();
 
@@ -59,35 +67,7 @@
     } catch (e) { return null; }  // cancelled
   };
 
-  // ── Native QR capturer: full-res photo + OFFLINE ML Kit decode ───
-  window.MGT_CAPTURE = {
-    supported: function () { return true; },
-    async open() {
-      var photo;
-      try {
-        photo = await P.Camera.getPhoto({
-          quality: 95, resultType: "uri", source: "CAMERA",
-          correctOrientation: true, presentationStyle: "fullscreen",
-        });
-      } catch (e) { return null; }  // user cancelled the camera
-
-      var raw = null;
-      try {
-        var out = await P.BarcodeScanning.readBarcodesFromImage({ path: photo.path, formats: ["QR_CODE"] });
-        var codes = (out && out.barcodes) || [];
-        if (codes.length) raw = codes[0].rawValue || codes[0].displayValue || null;
-      } catch (e) {}
-
-      var file = null;
-      try { file = await toFile(photo, "cccd-qr.jpg"); } catch (e) {}
-
-      // Fallback: decode the captured image with the JS cascade (jsQR/ZXing).
-      if (!raw && file && window.MGT_QR && window.MGT_QR.scanFile) {
-        try { var s = await window.MGT_QR.scanFile(file); if (s && s.ok) return { file: file, raw: s.raw, fields: s.fields }; } catch (e) {}
-      }
-      if (!raw) return { fallback: true };   // couldn't read → let caller pick from library
-      var fields = (window.MGT_QR && window.MGT_QR.parseCCCD) ? window.MGT_QR.parseCCCD(raw) : {};
-      return { file: file, raw: raw, fields: fields };
-    }
-  };
+  // MGT_CAPTURE (live QR scanner) is provided by qr-capturer.js (loaded after this
+  // file). It uses getUserMedia for a live-stream ZXing decode which works in
+  // Capacitor's WKWebView/WebView with the camera permission already granted.
 })();

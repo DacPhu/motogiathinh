@@ -168,7 +168,7 @@ def permissions_for_role(role: RoleName) -> dict[str, dict[str, bool]]:
         return _all(True)
     out = _all(False)
     if role == RoleName.collaborator:
-        out["students"] = {"c": True, "r": True, "u": False, "d": False}
+        out["students"] = {"c": True, "r": True, "u": True, "d": False}
     elif role == RoleName.guest:
         out["students"] = {"c": True, "r": True, "u": True, "d": False}
     return out

@@ -45,6 +45,9 @@ jobs:
           npx cap sync ios
           node patch-native.mjs
 
+      - name: Generate app icons
+        run: npx capacitor-assets generate --ios
+
       - name: pod install
         working-directory: mobile/ios/App
         run: pod install
