@@ -186,4 +186,6 @@
       });
     }
   };
+  // Expose decode utilities for native-bridge.js override.
+  window._MGT_QR_UTILS = { gateFile: _gateFile, parseCCCD: _parseCCCD };
 })();

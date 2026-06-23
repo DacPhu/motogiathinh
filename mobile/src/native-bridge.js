@@ -67,7 +67,76 @@
     } catch (e) { return null; }  // cancelled
   };
 
-  // MGT_CAPTURE (live QR scanner) is provided by qr-capturer.js (loaded after this
-  // file). It uses getUserMedia for a live-stream ZXing decode which works in
-  // Capacitor's WKWebView/WebView with the camera permission already granted.
+  // MGT_CAPTURE: native override using Camera.getPhoto + client-side decode cascade.
+  // Loaded AFTER qr-capturer.js (see build.mjs), so this overwrites the ZXing
+  // getUserMedia implementation which is unreliable in WKWebView.
+  window.MGT_CAPTURE = {
+    supported() { return true; },
+    async open() {
+      var utils = window._MGT_QR_UTILS || {};
+      var gateFile = utils.gateFile;
+      var parseCCCD = utils.parseCCCD || function(raw) {
+        if (typeof raw !== 'string' || raw.indexOf('|') < 0) return {};
+        var p = raw.split('|'); var o = {};
+        if (p[0]) o.idNumber = p[0]; if (p[2]) o.name = p[2];
+        var _vn = function(s) { return (typeof s === 'string' && /^\d{8}$/.test(s)) ? s.slice(0,2)+'/'+s.slice(2,4)+'/'+s.slice(4) : undefined; };
+        var dob = _vn(p[3]); if (dob) o.dob = dob;
+        if (p[4]) o.gender = p[4]; if (p[5]) o.address = p[5];
+        var cap = _vn(p[6]); if (cap) o.ngayCapCCCD = cap;
+        return o;
+      };
+      try {
+        // Try ML Kit barcode scanner first (fast, no camera preview needed)
+        var bs = P.BarcodeScanner;
+        if (bs && bs.isSupported) {
+          var supp = await bs.isSupported();
+          if (supp && supp.supported) {
+            var perm = await bs.checkPermissions();
+            if (perm && perm.camera !== 'granted') perm = await bs.requestPermissions();
+            if (perm && perm.camera === 'granted') {
+              var scanRes = await bs.scan({ formats: ['QR_CODE'] });
+              if (scanRes && scanRes.barcodes && scanRes.barcodes.length > 0) {
+                var raw = scanRes.barcodes[0].rawValue;
+                var fields = parseCCCD(raw);
+                // After getting QR data, prompt user to take/pick the QR photo for upload
+                try {
+                  var qrPhoto = await P.Camera.getPhoto({
+                    quality: 90, resultType: "uri", source: "PROMPT",
+                    correctOrientation: true, presentationStyle: "fullscreen",
+                    promptLabelHeader: "Chụp ảnh QR CCCD để lưu",
+                    promptLabelPhoto: "Thư viện", promptLabelPicture: "Chụp ảnh",
+                    promptLabelCancel: "Bỏ qua",
+                  });
+                  var file = await toFile(qrPhoto, "cccd-qr.jpg");
+                  return { file: file, raw: raw, fields: fields };
+                } catch (e) {
+                  // Photo step skipped — return data only (file will be null)
+                  return { file: null, raw: raw, fields: fields };
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+      // Fallback: take/pick a photo, decode QR client-side (avoids getUserMedia)
+      try {
+        var photo = await P.Camera.getPhoto({
+          quality: 90, resultType: "uri", source: "PROMPT",
+          correctOrientation: true, presentationStyle: "fullscreen",
+          promptLabelHeader: "Chụp hoặc chọn ảnh QR CCCD",
+          promptLabelPhoto: "Thư viện", promptLabelPicture: "Chụp ảnh",
+          promptLabelCancel: "Hủy",
+        });
+        var file = await toFile(photo, "cccd-qr.jpg");
+        if (gateFile) {
+          var raw = await gateFile(file);
+          if (!raw) return null;
+          return { file: file, raw: raw, fields: parseCCCD(raw) };
+        }
+        return { fallback: true };
+      } catch (e) {
+        return null; // cancelled
+      }
+    }
+  };
 })();

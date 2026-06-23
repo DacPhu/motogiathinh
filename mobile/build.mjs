@@ -51,7 +51,8 @@ for (const [name, url] of Object.entries(CDN)) {
   console.log("fetched", name, buf.length);
 }
 
-// 7) index.html (script order matters: native-bridge BEFORE data-loader)
+// 7) index.html (script order: qr-capturer BEFORE native-bridge so native-bridge
+//    can override window.MGT_CAPTURE with the native camera+ML Kit path)
 const html = `<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -71,8 +72,8 @@ const html = `<!DOCTYPE html>
   <script src="lib/react.production.min.js"></script>
   <script src="lib/react-dom.production.min.js"></script>
   <script src="config.js"></script>
-  <script src="native-bridge.js"></script>
   <script src="qr-capturer.js"></script>
+  <script src="native-bridge.js"></script>
   <script src="data-loader.js"></script>
   <script src="atoms.js"></script>
   <script src="shell.js"></script>
