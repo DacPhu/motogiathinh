@@ -13,7 +13,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 
 from app.core.storage import upload_bytes
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser, assigned_class_ids, require_permission
+from app.models.class_model import ClassEnrollment
+from app.models.enums import RoleName
 from app.models.student import Student
 from app.routers.students import _student_accessible
 from app.utils.dates import iso_to_vn_datetime
@@ -43,6 +45,23 @@ async def _load_accessible_student(db, current_user, student_id: str) -> Student
     s = await db.get(Student, s_uuid)
     if not s:
         raise HTTPException(404, "student_not_found")
+    # For CTVs, doc uploads are allowed for students in ANY of their ever-assigned
+    # classes (not just currently active ones). This lets them complete legacy
+    # profiles where the class has since ended (đã kết thúc).
+    if current_user.role == RoleName.collaborator:
+        acc = await assigned_class_ids(db, current_user)
+        if not acc:
+            raise HTTPException(403, "class_not_accessible")
+        res = await db.execute(
+            select(ClassEnrollment.id).where(
+                ClassEnrollment.student_id == s_uuid,
+                ClassEnrollment.class_id.in_(acc),
+                ClassEnrollment.deleted_at.is_(None),
+            ).limit(1)
+        )
+        if res.first() is None:
+            raise HTTPException(403, "class_not_accessible")
+        return s
     if not await _student_accessible(db, current_user, s.id):
         raise HTTPException(403, "class_not_accessible")
     return s

@@ -257,7 +257,7 @@ async def create_student(
     total_fee = max(Decimal(0), fp_amount - pr_disc)
     # Resolve responsible staff. Guest kiosk: the operator owns the students it creates.
     resp_uuid = None
-    if current_user.role == RoleName.guest:
+    if current_user.role in (RoleName.guest, RoleName.collaborator):
         resp_uuid = current_user.id
     elif f.responsibleStaffId:
         try: resp_uuid = uuid.UUID(f.responsibleStaffId)
