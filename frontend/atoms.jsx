@@ -104,7 +104,7 @@ function Button({ variant = "primary", size = "md", icon, children, onClick, dis
 //   14 → Compact / chart        (line-chart hosts, TongKpi)
 //    0 → List shell             (header strip + scrollable body inside)
 // --------------------------------------------------------------------
-function GlassCard({ children, padding = 18, style = {}, soft = false, onClick }) {
+function GlassCard({ children, padding = 18, style = {}, soft = false, onClick, onContextMenu }) {
   const cardStyle = {
     background: soft ? "var(--glass-1)" : "var(--glass-2)",
     backdropFilter: "var(--glass-blur)",
@@ -117,7 +117,7 @@ function GlassCard({ children, padding = 18, style = {}, soft = false, onClick }
     transition: "all 220ms var(--ease-out)",
     ...style,
   };
-  return <div style={cardStyle} onClick={onClick}>{children}</div>;
+  return <div style={cardStyle} onClick={onClick} onContextMenu={onContextMenu}>{children}</div>;
 }
 
 // --------------------------------------------------------------------

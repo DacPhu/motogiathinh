@@ -62,7 +62,16 @@ function BranchesTab({ onOpenClass }) {
   const [selectedId, setSelectedId] = React.useState(null);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editingId, setEditingId] = React.useState(null);
+  const [ctxMenu, setCtxMenu] = React.useState(null); // { id, x, y }
   const canCreate = D.can("branches", "create");
+  const canUpdate = D.can("branches", "update");
+
+  React.useEffect(() => {
+    if (!ctxMenu) return;
+    const h = () => setCtxMenu(null);
+    window.addEventListener("click", h);
+    return () => window.removeEventListener("click", h);
+  }, [!!ctxMenu]);
 
   const toggle = (id) => setSelectedId(prev => prev === id ? null : id);
   // Managers come from admin/staff accounts (any active account is eligible).
@@ -97,6 +106,23 @@ function BranchesTab({ onOpenClass }) {
         initialValues={editing || {}}
         fields={branchFields}
         onSave={(d) => window.MGT_DATA.api.updateBranch(editingId, d)}/>
+      {/* Right-click context menu for branch cards (admin only) */}
+      {ctxMenu && canUpdate && (
+        <div style={{
+          position: "fixed", top: ctxMenu.y, left: ctxMenu.x, zIndex: 100010,
+          background: "var(--glass-2)", border: "1px solid var(--glass-stroke)",
+          backdropFilter: "var(--glass-blur)", borderRadius: 10, padding: "4px 0",
+          boxShadow: "var(--shadow-2)", minWidth: 140,
+        }} onClick={(e) => e.stopPropagation()}>
+          <div onClick={() => { setEditingId(ctxMenu.id); setCtxMenu(null); }} style={{
+            padding: "8px 14px", cursor: "pointer", fontSize: 13,
+            fontFamily: "var(--font-ui)", color: "var(--fg-1)",
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <Icon name="edit" size={14}/> Sửa
+          </div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
         {D.branches.map(b => {
           // Use index maps — O(1) per branch instead of three full scans.
@@ -112,6 +138,7 @@ function BranchesTab({ onOpenClass }) {
           return (
             <GlassCard key={b.id} padding={22}
                        onClick={() => toggle(b.id)}
+                       onContextMenu={canUpdate ? (e) => { e.preventDefault(); setCtxMenu({ id: b.id, x: e.clientX, y: e.clientY }); } : undefined}
                        style={{
                          cursor: "pointer",
                          transition: "all 220ms var(--ease-out)",
@@ -136,10 +163,7 @@ function BranchesTab({ onOpenClass }) {
                     <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 600, color: "var(--fg-1)", letterSpacing: "-0.02em" }}>{b.name}</h3>
                     <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)" }}>{b.address}</span>
                   </div>
-                  {/* Per spec: branches do not expose Sửa/Xóa actions.
-                      Creation stays available via the "Thêm chi nhánh"
-                      button above for setup, but lifecycle changes happen
-                      via Lịch sử audit + DB ops, not user UI. */}
+                  {/* Sửa available via right-click → context menu (admin only) */}
                 </div>
 
                 <Divider/>
