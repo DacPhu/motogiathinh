@@ -327,7 +327,22 @@ function Boot() {
       </div>
     );
   }
-  return <App />;
+  return (
+    <>
+      {window._MGT_OFFLINE && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 200000,
+          background: "color-mix(in oklab, var(--neon-violet, #a78bfa) 80%, #000)",
+          padding: "7px 16px", textAlign: "center",
+          fontFamily: "var(--font-ui, system-ui)", fontSize: 12, fontWeight: 600, color: "#fff",
+          letterSpacing: "0.01em",
+        }}>
+          Không có mạng — đang xem dữ liệu đã lưu. Kết nối internet để cập nhật.
+        </div>
+      )}
+      <App />
+    </>
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<Boot />);

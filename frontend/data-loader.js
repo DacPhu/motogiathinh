@@ -40,6 +40,9 @@
   const p2  = (n) => String(n).padStart(2, '0');
 
   async function api(path, opts = {}) {
+    if (window._MGT_OFFLINE && opts.method && opts.method !== 'GET') {
+      throw new Error('Không có mạng — vui lòng kết nối internet để thực hiện thao tác này.');
+    }
     const res = await fetch(API + path, {
       credentials: 'include',
       headers: { 'Content-Type': 'application/json', ...(window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {}), ...(opts.headers || {}) },
@@ -390,30 +393,60 @@
     });
   }
 
+  const _CACHE_KEY = 'mgt_snapshot_v1';
+
   async function boot() {
-    let me = null;
-    let mePerms = {};
+    let me = null, mePerms = {}, fromCache = false, rawCache = null;
     try {
       const meResp = await api('/me');
       me = meResp.user;
       mePerms = meResp.permissions || {};
-    } catch {
-      me = await showLoginOverlay();
-      try { const reMe = await api('/me'); mePerms = reMe.permissions || {}; } catch { mePerms = {}; }
+    } catch (err) {
+      // Detect network errors vs auth errors. Network = offline or fetch failed.
+      const isNetErr = !navigator.onLine || err instanceof TypeError || /failed to fetch/i.test(String(err.message || ''));
+      if (isNetErr) {
+        try { rawCache = JSON.parse(localStorage.getItem(_CACHE_KEY)); } catch {}
+        if (rawCache && rawCache.me) {
+          me = rawCache.me;
+          mePerms = rawCache.mePerms || {};
+          fromCache = true;
+          window._MGT_OFFLINE = true;
+        }
+      }
+      if (!me) {
+        me = await showLoginOverlay();
+        try { const reMe = await api('/me'); mePerms = reMe.permissions || {}; } catch { mePerms = {}; }
+      }
     }
 
-    // Activity log is the only resource whose read permission is commonly
-    // revoked for staff. If the user lacks it the endpoint 403s — swallow
-    // so boot still succeeds; the Lịch sử tab is hidden by D.can() anyway.
-    const safeActivityLog = () => api('/activity-log').catch(() => []);
-    const [branches, accounts, feePlans, promotions, teachers, vehicles,
-           classesRaw, studentsRaw, paymentsRaw, notifications, activityLog, profileDocs] =
-      await Promise.all([
-        api('/branches'), api('/accounts'), api('/fee-plans'), api('/promotions'),
-        api('/teachers'), api('/vehicles'), api('/classes'), api('/students'),
-        api('/payments'), api('/notifications'), safeActivityLog(),
-        api('/constants/profile-docs'),
-      ]);
+    let branches, accounts, feePlans, promotions, teachers, vehicles,
+        classesRaw, studentsRaw, paymentsRaw, notifications, activityLog, profileDocs;
+
+    if (fromCache && rawCache) {
+      ({ branches = [], accounts = [], feePlans = [], promotions = [], teachers = [],
+         vehicles = [], classesRaw = [], studentsRaw = [], paymentsRaw = [],
+         notifications = [], activityLog = [], profileDocs = [] } = rawCache);
+    } else {
+      // Activity log is the only resource whose read permission is commonly
+      // revoked for staff. If the user lacks it the endpoint 403s — swallow
+      // so boot still succeeds; the Lịch sử tab is hidden by D.can() anyway.
+      const safeActivityLog = () => api('/activity-log').catch(() => []);
+      [branches, accounts, feePlans, promotions, teachers, vehicles,
+       classesRaw, studentsRaw, paymentsRaw, notifications, activityLog, profileDocs] =
+        await Promise.all([
+          api('/branches'), api('/accounts'), api('/fee-plans'), api('/promotions'),
+          api('/teachers'), api('/vehicles'), api('/classes'), api('/students'),
+          api('/payments'), api('/notifications'), safeActivityLog(),
+          api('/constants/profile-docs'),
+        ]);
+      // Save snapshot for next offline session (best-effort, ignore quota errors).
+      try {
+        localStorage.setItem(_CACHE_KEY, JSON.stringify({
+          me, mePerms, branches, accounts, feePlans, promotions, teachers, vehicles,
+          classesRaw, studentsRaw, paymentsRaw, notifications, activityLog, profileDocs,
+        }));
+      } catch {}
+    }
 
     const NOW = new Date(), NOW_MS = NOW.getTime();
     const TODAY_STR = `${p2(NOW.getDate())}/${p2(NOW.getMonth() + 1)}/${NOW.getFullYear()}`;
@@ -728,6 +761,7 @@
           return { id };
         },
         async _upload(path, file) {
+          if (window._MGT_OFFLINE) throw new Error('Không có mạng — vui lòng kết nối internet để tải ảnh.');
           const fd = new FormData(); fd.append('file', file);
           const res = await fetch(API + path, { method: 'POST', credentials: 'include', headers: window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {}, body: fd });
           if (!res.ok) throw new Error('upload_failed: ' + res.status);
