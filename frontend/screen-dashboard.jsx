@@ -667,35 +667,50 @@ function LineChart({ width = 720, height = 240, padL = 32, padR = 18, padT = 14,
 // ====================================================================
 function DashboardScreen() {
   const D = window.MGT_DATA;
+  const [heroSlots, setHeroSlots] = React.useState(_loadHeroSlots);
 
-  // Top KPIs use today/recent data — single pass over students.
-  const TODAY = "30/05";
+  // Top KPIs — single pass collects all stats needed by any card type.
+  const TODAY_PREFIX = D.TODAY ? D.TODAY.slice(0, 5) : ""; // "dd/mm"
   const ACTIVE_STATUSES = new Set(["đang mở", "đang diễn ra"]);
-  let todayRevenue = 0, todayReceipts = 0, newToday = 0;
-  let outstandingTotal = 0, outstandingCount = 0, activeStudents = 0;
-  const licenceCount = { A: 0, A1: 0 };
+  const cutoff7d = D._NOW ? new Date(D._NOW.getTime() - 7 * 86400000) : null;
+  let todayRevenue = 0, todayReceipts = 0, revenue7d = 0;
   for (const p of D.payments) {
-    if (p.createdAt.startsWith(TODAY)) { todayRevenue += p.amount; todayReceipts++; }
+    if (TODAY_PREFIX && p.createdAt && p.createdAt.startsWith(TODAY_PREFIX)) { todayRevenue += p.amount; todayReceipts++; }
+    if (cutoff7d && p.createdAt) {
+      try { const [d,m,y] = p.createdAt.split("/"); if (new Date(+y,+m-1,+d) >= cutoff7d) revenue7d += p.amount; } catch {}
+    }
   }
+  let newToday = 0, outstanding = 0, outstandingCount = 0, activeStudents = 0, passedStudents = 0;
+  const licA = { A: 0, A1: 0 };
   for (const s of D.students) {
-    if (s.createdAt.startsWith(TODAY)) newToday++;
-    outstandingTotal += s.balance;
+    if (TODAY_PREFIX && s.createdAt && s.createdAt.startsWith(TODAY_PREFIX)) newToday++;
+    outstanding += s.balance;
     if (s.balance > 0) outstandingCount++;
     const c = D.getClass(s.classId);
     if (c && ACTIVE_STATUSES.has(c.status)) activeStudents++;
-    licenceCount[s.licence] = (licenceCount[s.licence] || 0) + 1;
+    if (s.paymentStatus === "paid" || s.status === "passed") passedStudents++;
+    licA[s.licence] = (licA[s.licence] || 0) + 1;
   }
+  const heroStats = {
+    todayRevenue, todayReceipts, todayStr: D.TODAY || "",
+    newToday, outstanding, outstandingCount,
+    activeStudents, licA: licA.A || 0, licA1: licA.A1 || 0,
+    totalStudents: D.students.length, revenue7d, passedStudents,
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Today KPIs — hidden in print so each PDF page is exactly one
-          section (the section-level mini-KPIs and charts already
-          summarize the same headline numbers). */}
+      {/* Hero KPI cards — right-click any card to swap via catalog */}
       <div className="mgt-print-hide" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-        <KpiBig index={0} label="Đã thu hôm nay" value={window.fmtVND(todayRevenue)}    hint={`${todayReceipts} biên lai`}     color="lime"   icon="trending-up"/>
-        <KpiBig index={1} label="HV mới hôm nay"  value={newToday}                       hint="đăng ký 30/05/2026"            color="cyan"   icon="user-plus"/>
-        <KpiBig index={2} label="TỔNG NỢ"        value={window.fmtVND(outstandingTotal)} hint={`${outstandingCount} học viên chờ thanh toán`} color="pink"   icon="minus"/>
-        <KpiBig index={3} label="Học viên active" value={activeStudents}                  hint={`A: ${licenceCount.A} · A1: ${licenceCount.A1}`} color="violet" icon="users"/>
+        {heroSlots.map((key, i) => {
+          const card = _CATALOG_MAP[key] || CARD_CATALOG[0];
+          const { value, hint } = card.compute(heroStats);
+          return (
+            <ContextMenuKpi key={i} slotIndex={i} slots={heroSlots} onSlotsChange={setHeroSlots}>
+              <KpiBig index={i} label={card.label} value={value} hint={hint} color={card.color} icon={card.icon}/>
+            </ContextMenuKpi>
+          );
+        })}
       </div>
 
       {/* Wrappers exist ONLY so the print stylesheet can break-before-
@@ -1628,8 +1643,132 @@ function KpiBig({ label, value, hint, color = "cyan", icon, index = 0 }) {
   );
 }
 
+// ─── Customisable hero cards (Task 9) ───────────────────────────────────────
+const _HERO_KEY = "mgt_hero_cards_v1";
+const _DEFAULT_HEROES = ["today_revenue", "today_students", "total_debt", "active_students"];
+
+// Catalog: 7 card types. compute(stats) → { value, hint }
+const CARD_CATALOG = [
+  { key: "today_revenue",   label: "Đã thu hôm nay",   color: "lime",   icon: "trending-up",
+    compute: (s) => ({ value: window.fmtVND(s.todayRevenue),    hint: `${s.todayReceipts} biên lai` }) },
+  { key: "today_students",  label: "HV mới hôm nay",   color: "cyan",   icon: "user-plus",
+    compute: (s) => ({ value: s.newToday,                        hint: `đăng ký ${s.todayStr}` }) },
+  { key: "total_debt",      label: "Tổng nợ",           color: "pink",   icon: "minus",
+    compute: (s) => ({ value: window.fmtVND(s.outstanding),      hint: `${s.outstandingCount} học viên` }) },
+  { key: "active_students", label: "Học viên active",   color: "violet", icon: "users",
+    compute: (s) => ({ value: s.activeStudents,                  hint: `A: ${s.licA} · A1: ${s.licA1}` }) },
+  { key: "total_students",  label: "Tổng học viên",     color: "cyan",   icon: "graduation",
+    compute: (s) => ({ value: s.totalStudents,                   hint: "tất cả thời gian" }) },
+  { key: "revenue_7d",      label: "Thu 7 ngày",        color: "lime",   icon: "chart",
+    compute: (s) => ({ value: window.fmtVND(s.revenue7d),        hint: "7 ngày gần nhất" }) },
+  { key: "passed_students", label: "HV hoàn thành",     color: "amber",  icon: "check",
+    compute: (s) => ({ value: s.passedStudents,                  hint: "đã thi đỗ hoặc tốt nghiệp" }) },
+];
+const _CATALOG_MAP = Object.fromEntries(CARD_CATALOG.map(c => [c.key, c]));
+
+function _loadHeroSlots() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(_HERO_KEY));
+    if (Array.isArray(saved) && saved.length === 4 && saved.every(k => _CATALOG_MAP[k])) return saved;
+  } catch {}
+  return [..._DEFAULT_HEROES];
+}
+
+// Tiny right-click context menu + catalog dialog wrapper
+function ContextMenuKpi({ slotIndex, slots, onSlotsChange, children }) {
+  const [menu, setMenu]       = React.useState(null);   // { x, y }
+  const [catalog, setCatalog] = React.useState(false);
+
+  const openMenu = (e) => {
+    e.preventDefault();
+    setMenu({ x: e.clientX, y: e.clientY });
+  };
+  const closeMenu = () => setMenu(null);
+
+  React.useEffect(() => {
+    if (!menu) return;
+    const h = () => closeMenu();
+    window.addEventListener("click", h);
+    return () => window.removeEventListener("click", h);
+  }, [menu]);
+
+  const pickCard = (key) => {
+    const next = [...slots];
+    next[slotIndex] = key;
+    localStorage.setItem(_HERO_KEY, JSON.stringify(next));
+    onSlotsChange(next);
+    setCatalog(false);
+  };
+
+  return (
+    <div onContextMenu={openMenu} style={{ position: "relative" }}>
+      {children}
+      {menu && (
+        <div style={{
+          position: "fixed", top: menu.y, left: menu.x, zIndex: 100010,
+          background: "var(--glass-2)", border: "1px solid var(--glass-stroke)",
+          backdropFilter: "var(--glass-blur)", borderRadius: 10, padding: "4px 0",
+          boxShadow: "var(--shadow-2)", minWidth: 140,
+        }} onClick={(e) => e.stopPropagation()}>
+          <div onClick={() => { closeMenu(); setCatalog(true); }} style={{
+            padding: "8px 14px", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-ui)",
+            color: "var(--fg-1)", display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <Icon name="edit" size={14}/> Thay thẻ
+          </div>
+        </div>
+      )}
+      {catalog && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 100010,
+          background: "rgba(0,0,0,.55)", backdropFilter: "blur(4px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }} onClick={() => setCatalog(false)}>
+          <div style={{
+            background: "var(--glass-2)", border: "1px solid var(--glass-stroke)",
+            borderRadius: 20, padding: "24px 22px", maxWidth: 480, width: "90vw",
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em",
+                          textTransform: "uppercase", color: "var(--fg-3)", marginBottom: 16 }}>
+              Chọn thẻ thay thế
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+              {CARD_CATALOG.map(card => {
+                const c = `var(--neon-${card.color})`;
+                const selected = slots[slotIndex] === card.key;
+                return (
+                  <div key={card.key} onClick={() => pickCard(card.key)} style={{
+                    padding: "14px 16px", borderRadius: 14, cursor: "pointer",
+                    border: `1px solid ${selected ? c : "var(--glass-stroke)"}`,
+                    background: selected ? `color-mix(in oklab, ${c} 12%, var(--glass-1))` : "var(--glass-1)",
+                    display: "flex", alignItems: "center", gap: 10,
+                    transition: "all 120ms",
+                  }}>
+                    <div style={{
+                      width: 34, height: 34, borderRadius: 9, flexShrink: 0,
+                      background: `linear-gradient(135deg, ${c}, color-mix(in oklab, ${c} 55%, var(--ink-0)))`,
+                      boxShadow: `0 0 12px color-mix(in oklab, ${c} 45%, transparent)`,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}>
+                      <Icon name={card.icon} size={16} color="var(--ink-0)"/>
+                    </div>
+                    <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600,
+                                   color: selected ? c : "var(--fg-1)" }}>
+                      {card.label}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 Object.assign(window, {
   DashboardScreen, SectionTong, SectionBienDong, SectionSoSanh, SectionHieuSuat,
   LineChart, BucketControls, ToggleLegend, SectionHeader, KpiBig, TrieuValue, BRANCH_TONES,
-  BranchMetricsRow,
+  BranchMetricsRow, CARD_CATALOG,
 });
