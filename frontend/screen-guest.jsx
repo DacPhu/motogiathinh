@@ -128,13 +128,14 @@ function GuestApp() {
         borderLeft: "1px solid var(--glass-stroke)", borderRight: "1px solid var(--glass-stroke)",
       }}>
         <header style={{
-          padding: "12px 18px", display: "flex", alignItems: "center", gap: 10, minHeight: 72,
+          paddingTop: "max(16px, env(safe-area-inset-top, 16px))", paddingBottom: 16, paddingLeft: 18, paddingRight: 18,
+          display: "flex", alignItems: "center", gap: 10, minHeight: 80,
           background: viewing ? "var(--glass-3)" : "var(--glass-2)",
           borderBottom: "1px solid var(--ink-4)", position: "relative", flex: "0 0 auto",
         }}>
           {viewing ? (
             <button onClick={backToList} style={{
-              display: "flex", alignItems: "center", gap: 12, width: "100%", alignSelf: "stretch", minHeight: 48,
+              display: "flex", alignItems: "center", gap: 12, width: "100%", alignSelf: "stretch", minHeight: 56,
               background: "transparent", border: "none", cursor: "pointer", padding: 0,
               color: "var(--fg-1)", fontFamily: "var(--font-display)", fontSize: 32, fontWeight: 800,
               letterSpacing: "0.02em", textAlign: "left",

@@ -16,6 +16,7 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
   const user = D.currentUser;
   const branch = D.getBranch(user.branchId);
   const [logoutOpen, setLogoutOpen] = React.useState(false);
+  const [downloadOpen, setDownloadOpen] = React.useState(false);
   return (
     // Wrapper reserves layout space; the aside inside transforms independently
     // so it looks like a card being pulled out of (or pushed back into) a deck
@@ -50,7 +51,7 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
       }}>
       {/* Logo */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 6px 12px", borderBottom: "1px solid var(--glass-stroke)" }}>
-        <img src="assets/logo-mark.svg" alt="" style={{ width: 32, height: 32 }}/>
+        <img src="assets/logo.png" alt="" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "contain" }}/>
         <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--fg-1)", letterSpacing: "-0.01em" }}>CENTERSAI.com</span>
         </div>
@@ -97,6 +98,22 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
 
       <div style={{ flex: 1 }}></div>
 
+      {/* Download app button */}
+      <button onClick={() => setDownloadOpen(true)} style={{
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        padding: "9px 12px", borderRadius: 12, width: "100%",
+        background: "color-mix(in oklab, var(--neon-cyan) 12%, transparent)",
+        border: "1px solid color-mix(in oklab, var(--neon-cyan) 35%, transparent)",
+        color: "var(--neon-cyan)", cursor: "pointer",
+        fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600,
+        transition: "all 140ms var(--ease-out)",
+      }}
+      onMouseEnter={e => { e.currentTarget.style.background = "color-mix(in oklab, var(--neon-cyan) 20%, transparent)"; }}
+      onMouseLeave={e => { e.currentTarget.style.background = "color-mix(in oklab, var(--neon-cyan) 12%, transparent)"; }}>
+        <Icon name="smartphone" size={14} color="var(--neon-cyan)"/>
+        Tải ứng dụng
+      </button>
+
       {/* Theme toggle + vehicle-mode toggle — fill the nav-card width */}
       <div style={{ display: "flex", padding: "0 4px", gap: 8 }}>
         <ThemeToggle/>
@@ -119,6 +136,43 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
         </div>
       </button>
       </aside>
+
+      <Modal open={downloadOpen} onClose={() => setDownloadOpen(false)}
+             title="Tải ứng dụng MotoGiaThịnh CTV"
+             subtitle="Cài đặt ứng dụng để quản lý học viên trên điện thoại"
+             footer={
+               <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                 <Button variant="ghost" onClick={() => setDownloadOpen(false)}>Đóng</Button>
+               </div>
+             }
+             width={480}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {[
+            { icon: "smartphone", label: "iOS (iPhone)", hint: "Sideload — cần AltStore hoặc TrollStore", color: "var(--neon-cyan)", url: "https://motogiathinh.centersai.com/downloads/MotoGiaThinhCTV-unsigned.ipa", filename: "MotoGiaThinhCTV.ipa" },
+            { icon: "smartphone", label: "Android", hint: "APK — cho phép cài từ nguồn không rõ", color: "var(--neon-lime)", url: "https://motogiathinh.centersai.com/downloads/app-debug.apk", filename: "MotoGiaThinhCTV.apk" },
+          ].map(({ icon, label, hint, color, url, filename }) => (
+            <a key={label} href={url} download={filename} style={{
+              display: "flex", alignItems: "center", gap: 16,
+              padding: "16px 18px", borderRadius: 16, textDecoration: "none",
+              background: `color-mix(in oklab, ${color} 10%, transparent)`,
+              border: `1px solid color-mix(in oklab, ${color} 30%, transparent)`,
+              transition: "all 140ms var(--ease-out)",
+            }}
+            onMouseEnter={e => { e.currentTarget.style.background = `color-mix(in oklab, ${color} 18%, transparent)`; }}
+            onMouseLeave={e => { e.currentTarget.style.background = `color-mix(in oklab, ${color} 10%, transparent)`; }}>
+              <div style={{ width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center",
+                            background: `color-mix(in oklab, ${color} 20%, transparent)` }}>
+                <Icon name={icon} size={22} color={color}/>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontFamily: "var(--font-display)", fontWeight: 600, fontSize: 15, color: "var(--fg-1)" }}>{label}</div>
+                <div style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)", marginTop: 2 }}>{hint}</div>
+              </div>
+              <Icon name="download" size={16} color={color}/>
+            </a>
+          ))}
+        </div>
+      </Modal>
 
       <Modal open={logoutOpen} onClose={() => setLogoutOpen(false)}
              title="Đăng xuất khỏi tài khoản?"
