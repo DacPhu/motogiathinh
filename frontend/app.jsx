@@ -277,7 +277,8 @@ function ReportChoiceModal({ open, onClose }) {
   return (
     <Modal open={open} onClose={onClose} width={520}
            title="Xuất báo cáo"
-           subtitle="Chọn định dạng phù hợp với mục đích sử dụng">
+           subtitle="Chọn định dạng phù hợp với mục đích sử dụng"
+           footer={null}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <Option icon="chart" title="Trực quan (PDF)"
                 hint="Bảng tổng quan có biểu đồ và KPI — phù hợp để xem nhanh."
@@ -286,7 +287,7 @@ function ReportChoiceModal({ open, onClose }) {
                 hint="Bảng số liệu chính thức 7 ngày gần nhất — phù hợp để lưu trữ, gửi chủ doanh nghiệp."
                 onClick={() => choose(() => D.api.downloadFormalReportPdf())}/>
         <Option icon="download" title="Số liệu (Excel)"
-                hint="Workbook 6 sheet — cùng dữ liệu 7 ngày, tiện chỉnh sửa, lọc và in lại."
+                hint="Workbook 6 sheet (Tổng quan · Học viên · Thanh toán · Lớp học · CTV ×2) — toàn bộ dữ liệu, tiện lọc và in lại."
                 onClick={() => choose(() => D.api.downloadFormalReportXlsx())}/>
       </div>
     </Modal>

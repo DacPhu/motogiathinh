@@ -234,30 +234,6 @@ def compute_class_status(cls, now: datetime) -> str:
     return "đang diễn ra"
 
 
-async def assigned_class_ids(db: AsyncSession, user: User) -> Optional[set[uuid.UUID]]:
-    """All class IDs ever assigned to this CTV, regardless of active status.
-
-    Used for doc-upload access so a CTV can still upload docs to students in
-    classes that have since finished (đã kết thúc) — the common case when
-    completing a legacy student profile with missing CCCD photos.
-    admin / staff → None (no filter).
-    """
-    from app.models.class_model import Class
-    from app.models.user_assignment import UserClassAssignment
-
-    if user.role != RoleName.collaborator:
-        return None
-
-    query = (
-        select(UserClassAssignment.class_id)
-        .where(
-            UserClassAssignment.user_id == user.id,
-            UserClassAssignment.deleted_at.is_(None),
-        )
-    )
-    result = await db.execute(query)
-    return {row[0] for row in result.all()}
-
 
 async def accessible_class_ids(db: AsyncSession, user: User) -> Optional[set[uuid.UUID]]:
     """Class ids a COLLABORATOR may access, gated to ACTIVE classes at read time.

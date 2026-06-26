@@ -292,13 +292,17 @@ function GuestStudentDetail({ student, onBack }) {
 
   const pickInto = (key, file) => { if (file) setNewFiles(prev => ({ ...prev, [key]: file })); };
 
-  const scanQr = async (file) => {
+  const scanQr = async (file, preDecoded = null) => {
     if (!file) return;
-    // Clear old image immediately so user sees processing state cleanly.
     setNewFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
     setQrBusy(true); setQrErr(null); setQrInfo(null);
     try {
-      const out = await window.MGT_QR.scanFile(file);
+      let out;
+      if (preDecoded && preDecoded.fields && preDecoded.fields.idNumber) {
+        out = { ok: true, fields: preDecoded.fields, raw: preDecoded.raw };
+      } else {
+        out = await window.MGT_QR.scanFile(file);
+      }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
       if (out.fields.address && D.api && D.api.convertAddress) {
         try { const c = await D.api.convertAddress(out.fields.address); if (c && c.converted) out.fields.address = c.converted; } catch (e) {}
@@ -461,13 +465,17 @@ function GuestAddStudentModal({ open, onClose }) {
 
   const pickInto = (key, file) => { if (file) setDocFiles(prev => ({ ...prev, [key]: file })); };
 
-  const scanQr = async (file) => {
+  const scanQr = async (file, preDecoded = null) => {
     if (!file) return;
-    // Clear old QR image immediately so user sees processing state cleanly.
     setDocFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
     setQrBusy(true); setQrErr(null);
     try {
-      const out = await window.MGT_QR.scanFile(file);
+      let out;
+      if (preDecoded && preDecoded.fields && preDecoded.fields.idNumber) {
+        out = { ok: true, fields: preDecoded.fields, raw: preDecoded.raw };
+      } else {
+        out = await window.MGT_QR.scanFile(file);
+      }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
       if (out.fields.address && D.api && D.api.convertAddress) {
         try { const c = await D.api.convertAddress(out.fields.address); if (c && c.converted) out.fields.address = c.converted; } catch (e) {}
@@ -675,15 +683,18 @@ function QrSlot({ file, filled, busy, ok, idNumber, invalid, error, src, onPick 
   // fallback. If the capturer isn't loaded, falls back to the file picker.
   const open = async () => {
     if (busy) return;
-    let f = null;
+    let f = null, preDecoded = null;
     if (window.MGT_CAPTURE) {
       const r = await window.MGT_CAPTURE.open();
       if (r === null) return;                                   // cancelled
       f = r.file || (r.fallback ? await gPickPhoto() : null);   // library fallback
+      // If native scanner already decoded the QR (ML Kit), pass it through
+      // so scanQr can skip the redundant client-side re-decode.
+      if (r.raw && r.fields) preDecoded = { raw: r.raw, fields: r.fields };
     } else {
       f = await gPickPhoto();
     }
-    if (f) onPick(f);
+    if (f) onPick(f, preDecoded);
   };
   const border = busy ? "2px solid var(--neon-cyan)" : ok ? "3px solid var(--neon-lime)" : (invalid || error) ? "2px solid var(--neon-pink)" : "1px dashed var(--glass-stroke-strong)";
   const chip = { position: "absolute", left: 8, bottom: 6, zIndex: 1, padding: "2px 8px", borderRadius: 8,

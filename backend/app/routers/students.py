@@ -33,6 +33,24 @@ router = APIRouter(prefix="/students", tags=["students"])
 DEFAULT_FEES = {"A": 1995000, "A1": 565000}
 
 
+async def _get_student(db, id_str: str):
+    """Resolve student by 8-char hex prefix or full UUID string."""
+    from sqlalchemy import text
+    if len(id_str) == 8:
+        res = await db.execute(
+            text("SELECT id FROM students WHERE replace(id::text, '-', '') LIKE :p AND deleted_at IS NULL LIMIT 1"),
+            {"p": id_str + "%"},
+        )
+        row = res.first()
+        if not row:
+            return None
+        return await db.get(Student, row[0])
+    try:
+        return await db.get(Student, uuid.UUID(id_str))
+    except ValueError:
+        return None
+
+
 def _doc_url(s, col):
     """Browser-fetchable /api/files path for a stored doc (the column holds the
     internal MinIO URL; the served path is /api/files/students/<id>/<filename>)."""
@@ -40,7 +58,7 @@ def _doc_url(s, col):
     if not v:
         return None
     fn = str(v).rsplit("/", 1)[-1]
-    return f"/api/files/students/{s.id}/{fn}"
+    return f"/api/files/students/{s.id.hex[:8]}/{fn}"
 
 
 def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None) -> dict:
@@ -49,7 +67,7 @@ def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None
     licence = license_to_wire(licence_val)
     gender_val = s.gioi_tinh.value if hasattr(s.gioi_tinh, "value") else s.gioi_tinh
     return {
-        "id": str(s.id),
+        "id": s.id.hex[:8],
         "maHV": s.ma_hoc_vien or "",
         "name": s.ten_hoc_vien or "",
         "phone": s.so_dien_thoai or "",
@@ -337,9 +355,7 @@ async def update_student(
     db: DB,
     _perm: Annotated[None, Depends(require_permission("students", "update"))] = None,
 ):
-    try: s_uuid = uuid.UUID(student_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    s = await db.get(Student, s_uuid)
+    s = await _get_student(db, student_id)
     if not s: raise HTTPException(404, "student_not_found")
     if not await _student_accessible(db, current_user, s.id):
         raise HTTPException(403, "class_not_accessible")

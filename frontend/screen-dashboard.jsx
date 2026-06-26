@@ -17,15 +17,28 @@
 // (the dark-mode neons would otherwise wash out to near-invisible).
 // --------------------------------------------------------------------
 const BRANCH_TONES = {
-  "br-1": { name: "Cyan",   tones: ["#00E5FF", "#0096B0", "#03657A"] },  // 331A QL1A
-  "br-2": { name: "Pink",   tones: ["#FF3D8A", "#C2185B", "#7A1140"] },  // 183 14/9
-  "br-3": { name: "Violet", tones: ["#B6A0FF", "#7B5BD9", "#4B2F8E"] },  // 18C Phạm Hùng
+  "br-1": { name: "Cyan",   tones: ["#00E5FF", "#0096B0", "#03657A"] },
+  "br-2": { name: "Pink",   tones: ["#FF3D8A", "#C2185B", "#7A1140"] },
+  "br-3": { name: "Violet", tones: ["#B6A0FF", "#7B5BD9", "#4B2F8E"] },
+  "br-4": { name: "Amber",  tones: ["#FFB020", "#CC8810", "#7A5200"] },
+  "br-5": { name: "Lime",   tones: ["#B6FF3C", "#7ACC20", "#4A7A10"] },
 };
 const BRANCH_TONES_LIGHT = {
   "br-1": { name: "Cyan",   tones: ["#0096C7", "#006FA0", "#003F66"] },
   "br-2": { name: "Pink",   tones: ["#D81B60", "#A8154E", "#6E0E32"] },
   "br-3": { name: "Violet", tones: ["#6E48F2", "#5837C2", "#3A2580"] },
+  "br-4": { name: "Amber",  tones: ["#CC7700", "#AA5500", "#7A3300"] },
+  "br-5": { name: "Lime",   tones: ["#5A8500", "#3D6600", "#264000"] },
 };
+// Fallback palette for any br-N beyond the static entries above
+const _BRANCH_FALLBACK_DARK  = [["#00E5FF","#0096B0","#03657A"],["#FF3D8A","#C2185B","#7A1140"],["#B6A0FF","#7B5BD9","#4B2F8E"],["#FFB020","#CC8810","#7A5200"],["#B6FF3C","#7ACC20","#4A7A10"]];
+const _BRANCH_FALLBACK_LIGHT = [["#0096C7","#006FA0","#003F66"],["#D81B60","#A8154E","#6E0E32"],["#6E48F2","#5837C2","#3A2580"],["#CC7700","#AA5500","#7A3300"],["#5A8500","#3D6600","#264000"]];
+function _tonesFor(map, fallbackPalette, id) {
+  if (map[id]) return map[id];
+  const n = parseInt((id || "").replace("br-", ""), 10);
+  const t = Number.isFinite(n) ? fallbackPalette[(n - 1) % fallbackPalette.length] : fallbackPalette[0];
+  return { name: id, tones: t };
+}
 // Pick the right map at call time so theme switches apply instantly.
 function currentBranchTones() {
   return document.documentElement.getAttribute("data-theme") === "light"
@@ -668,11 +681,31 @@ function LineChart({ width = 720, height = 240, padL = 32, padR = 18, padT = 14,
 function DashboardScreen() {
   const D = window.MGT_DATA;
   const [heroSlots, setHeroSlots] = React.useState(_loadHeroSlots);
+  const [editSlot, setEditSlot]   = React.useState(null);
+  const [heroRect, setHeroRect]   = React.useState(null);
+  const heroRef = React.useRef(null);
+
+  const openCatalog = (i) => {
+    if (heroRef.current) setHeroRect(heroRef.current.getBoundingClientRect());
+    setEditSlot(i);
+  };
+  const pickCard = (key) => {
+    const next = [...heroSlots]; next[editSlot] = key;
+    localStorage.setItem(_HERO_KEY, JSON.stringify(next));
+    setHeroSlots(next); setEditSlot(null);
+  };
 
   // Top KPIs — single pass collects all stats needed by any card type.
   const TODAY_PREFIX = D.TODAY ? D.TODAY.slice(0, 5) : ""; // "dd/mm"
   const ACTIVE_STATUSES = new Set(["đang mở", "đang diễn ra"]);
   const cutoff7d = D._NOW ? new Date(D._NOW.getTime() - 7 * 86400000) : null;
+  // Monthly keys: "mm/yyyy" extracted from D.TODAY ("dd/mm/yyyy")
+  const MONTH_KEY = D.TODAY ? D.TODAY.slice(3) : "";           // e.g. "06/2026"
+  const _nowM = D._NOW ? D._NOW.getMonth() : (new Date()).getMonth();
+  const _nowY = D._NOW ? D._NOW.getFullYear() : (new Date()).getFullYear();
+  const _prevM = _nowM === 0 ? 12 : _nowM;
+  const _prevY = _nowM === 0 ? _nowY - 1 : _nowY;
+  const PREV_MONTH_KEY = `${String(_prevM).padStart(2, "0")}/${_prevY}`;
   let todayRevenue = 0, todayReceipts = 0, revenue7d = 0;
   for (const p of D.payments) {
     if (TODAY_PREFIX && p.createdAt && p.createdAt.startsWith(TODAY_PREFIX)) { todayRevenue += p.amount; todayReceipts++; }
@@ -681,6 +714,7 @@ function DashboardScreen() {
     }
   }
   let newToday = 0, outstanding = 0, outstandingCount = 0, activeStudents = 0, passedStudents = 0;
+  let newThisMonth = 0, newLastMonth = 0, newThisMonthA = 0, newThisMonthA1 = 0;
   const licA = { A: 0, A1: 0 };
   for (const s of D.students) {
     if (TODAY_PREFIX && s.createdAt && s.createdAt.startsWith(TODAY_PREFIX)) newToday++;
@@ -690,28 +724,74 @@ function DashboardScreen() {
     if (c && ACTIVE_STATUSES.has(c.status)) activeStudents++;
     if (s.paymentStatus === "paid" || s.status === "passed") passedStudents++;
     licA[s.licence] = (licA[s.licence] || 0) + 1;
+    // Monthly new-student counters
+    if (MONTH_KEY && s.createdAt && s.createdAt.slice(3) === MONTH_KEY) {
+      newThisMonth++;
+      if (s.licence === "A")  newThisMonthA++;
+      if (s.licence === "A1") newThisMonthA1++;
+    }
+    if (PREV_MONTH_KEY && s.createdAt && s.createdAt.slice(3) === PREV_MONTH_KEY) newLastMonth++;
   }
   const heroStats = {
     todayRevenue, todayReceipts, todayStr: D.TODAY || "",
     newToday, outstanding, outstandingCount,
     activeStudents, licA: licA.A || 0, licA1: licA.A1 || 0,
     totalStudents: D.students.length, revenue7d, passedStudents,
+    newThisMonth, newLastMonth, newThisMonthA, newThisMonthA1,
+    monthLabel: MONTH_KEY ? MONTH_KEY.split("/")[0] : "",
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       {/* Hero KPI cards — right-click any card to swap via catalog */}
-      <div className="mgt-print-hide" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+      <div ref={heroRef} className="mgt-print-hide" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
         {heroSlots.map((key, i) => {
           const card = _CATALOG_MAP[key] || CARD_CATALOG[0];
           const { value, hint } = card.compute(heroStats);
           return (
-            <ContextMenuKpi key={i} slotIndex={i} slots={heroSlots} onSlotsChange={setHeroSlots}>
+            <ContextMenuKpi key={i} slotIndex={i} onSwap={openCatalog}>
               <KpiBig index={i} label={card.label} value={value} hint={hint} color={card.color} icon={card.icon}/>
             </ContextMenuKpi>
           );
         })}
       </div>
+      {/* Catalog overlay — full-width preview of all available card types */}
+      {editSlot !== null && heroRect && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 100010,
+          background: "rgba(0,0,0,.65)", backdropFilter: "blur(6px)",
+        }} onClick={() => setEditSlot(null)}>
+          <div style={{
+            position: "absolute",
+            left: heroRect.left, width: heroRect.width,
+            top: Math.max(heroRect.top - 24, 12),
+            background: "var(--glass-2)", border: "1px solid var(--glass-stroke-strong)",
+            borderRadius: 22, padding: "20px 20px 24px",
+            backdropFilter: "var(--glass-blur)", WebkitBackdropFilter: "var(--glass-blur)",
+            boxShadow: "var(--shadow-2)",
+          }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em",
+                          textTransform: "uppercase", color: "var(--fg-3)", marginBottom: 16 }}>
+              Chọn thẻ — vị trí {editSlot + 1}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+              {CARD_CATALOG.map((card, ci) => {
+                const { value, hint } = card.compute(heroStats);
+                const selected = heroSlots[editSlot] === card.key;
+                return (
+                  <div key={card.key} onClick={() => pickCard(card.key)} style={{
+                    cursor: "pointer", borderRadius: 18,
+                    outline: selected ? `2px solid var(--neon-${card.color})` : "2px solid transparent",
+                    outlineOffset: 4, transition: "outline 120ms",
+                  }}>
+                    <KpiBig index={ci} label={card.label} value={value} hint={hint} color={card.color} icon={card.icon}/>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Wrappers exist ONLY so the print stylesheet can break-before-
           page on each section. `display: contents` makes them invisible
@@ -1262,9 +1342,10 @@ function SoSanhChart({ kind, grain, count, mode }) {
        { id: "A",    label: "A",    tone: 1, bold: false, dashed: false },
        { id: "A1",   label: "A1",   tone: 2, bold: false, dashed: true }];
 
-  const _tones = useBranchTones();
+  const _tonesMap = useBranchTones();
+  const _isDark = _tonesMap === BRANCH_TONES;
   D.branches.forEach((b) => {
-    const tones = _tones[b.id].tones;
+    const tones = _tonesFor(_tonesMap, _isDark ? _BRANCH_FALLBACK_DARK : _BRANCH_FALLBACK_LIGHT, b.id).tones;
     const buckets = kind === "revenue"
       ? D.revenueBuckets(grain, count, b.id, mode)
       : D.studentBuckets(grain, count, b.id, mode);
@@ -1382,7 +1463,9 @@ function fmtMetric(v, kind, mono = false) {
 }
 
 function BranchMetricsRow({ branch, metrics, allRows, expanded }) {
-  const tone = useBranchTones()[branch.branchId].tones[0];
+  const _tm = useBranchTones();
+  const _dark = _tm === BRANCH_TONES;
+  const tone = _tonesFor(_tm, _dark ? _BRANCH_FALLBACK_DARK : _BRANCH_FALLBACK_LIGHT, branch.branchId).tones[0];
   // Per-metric max across all branches → normalize within each metric
   const maxByMetric = {};
   metrics.forEach(m => { maxByMetric[m.id] = Math.max(0.0001, ...allRows.map(r => m.accessor(r))); });
@@ -1466,7 +1549,8 @@ function BranchMetricsRow({ branch, metrics, allRows, expanded }) {
 
 function PerformanceBarRow({ metric, rows }) {
   const max = Math.max(0.0001, ...rows.map(r => metric.accessor(r)));
-  const branchTones = useBranchTones();
+  const _btm = useBranchTones();
+  const _btDark = _btm === BRANCH_TONES;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 12 }}>
@@ -1477,7 +1561,7 @@ function PerformanceBarRow({ metric, rows }) {
         {rows.map(r => {
           const v = metric.accessor(r);
           const pct = (v / max) * 100;
-          const tone = branchTones[r.branchId].tones[0];
+          const tone = _tonesFor(_btm, _btDark ? _BRANCH_FALLBACK_DARK : _BRANCH_FALLBACK_LIGHT, r.branchId).tones[0];
           return (
             <div key={r.branchId} style={{ display: "grid", gridTemplateColumns: "160px 1fr 200px", gap: 14, alignItems: "center" }}>
               <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)" }}>{r.name}</span>
@@ -1661,8 +1745,14 @@ const CARD_CATALOG = [
     compute: (s) => ({ value: s.totalStudents,                   hint: "tất cả thời gian" }) },
   { key: "revenue_7d",      label: "Thu 7 ngày",        color: "lime",   icon: "chart",
     compute: (s) => ({ value: window.fmtVND(s.revenue7d),        hint: "7 ngày gần nhất" }) },
-  { key: "passed_students", label: "HV hoàn thành",     color: "amber",  icon: "check",
-    compute: (s) => ({ value: s.passedStudents,                  hint: "đã thi đỗ hoặc tốt nghiệp" }) },
+  { key: "passed_students",  label: "HV hoàn thành",           color: "amber",  icon: "check",
+    compute: (s) => ({ value: s.passedStudents,   hint: "đã thi đỗ hoặc tốt nghiệp" }) },
+  { key: "new_this_month",   label: "HV mới tháng này",        color: "cyan",   icon: "user-plus",
+    compute: (s) => ({ value: s.newThisMonth,     hint: `tháng trước: ${s.newLastMonth} HV` }) },
+  { key: "new_month_a",      label: "HV hạng A mới tháng này", color: "lime",   icon: "user-plus",
+    compute: (s) => ({ value: s.newThisMonthA,    hint: `hạng A · tháng ${s.monthLabel}` }) },
+  { key: "new_month_a1",     label: "HV hạng A1 mới tháng này", color: "violet", icon: "user-plus",
+    compute: (s) => ({ value: s.newThisMonthA1,   hint: `hạng A1 · tháng ${s.monthLabel}` }) },
 ];
 const _CATALOG_MAP = Object.fromEntries(CARD_CATALOG.map(c => [c.key, c]));
 
@@ -1674,15 +1764,11 @@ function _loadHeroSlots() {
   return [..._DEFAULT_HEROES];
 }
 
-// Tiny right-click context menu + catalog dialog wrapper
-function ContextMenuKpi({ slotIndex, slots, onSlotsChange, children }) {
-  const [menu, setMenu]       = React.useState(null);   // { x, y }
-  const [catalog, setCatalog] = React.useState(false);
+// Right-click context menu wrapper — catalog rendering lives in DashboardScreen
+function ContextMenuKpi({ slotIndex, onSwap, children }) {
+  const [menu, setMenu] = React.useState(null);
 
-  const openMenu = (e) => {
-    e.preventDefault();
-    setMenu({ x: e.clientX, y: e.clientY });
-  };
+  const openMenu = (e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); };
   const closeMenu = () => setMenu(null);
 
   React.useEffect(() => {
@@ -1691,14 +1777,6 @@ function ContextMenuKpi({ slotIndex, slots, onSlotsChange, children }) {
     window.addEventListener("click", h);
     return () => window.removeEventListener("click", h);
   }, [menu]);
-
-  const pickCard = (key) => {
-    const next = [...slots];
-    next[slotIndex] = key;
-    localStorage.setItem(_HERO_KEY, JSON.stringify(next));
-    onSlotsChange(next);
-    setCatalog(false);
-  };
 
   return (
     <div onContextMenu={openMenu} style={{ position: "relative" }}>
@@ -1710,56 +1788,11 @@ function ContextMenuKpi({ slotIndex, slots, onSlotsChange, children }) {
           backdropFilter: "var(--glass-blur)", borderRadius: 10, padding: "4px 0",
           boxShadow: "var(--shadow-2)", minWidth: 140,
         }} onClick={(e) => e.stopPropagation()}>
-          <div onClick={() => { closeMenu(); setCatalog(true); }} style={{
+          <div onClick={() => { closeMenu(); onSwap(slotIndex); }} style={{
             padding: "8px 14px", cursor: "pointer", fontSize: 13, fontFamily: "var(--font-ui)",
             color: "var(--fg-1)", display: "flex", alignItems: "center", gap: 8,
           }}>
             <Icon name="edit" size={14}/> Thay thẻ
-          </div>
-        </div>
-      )}
-      {catalog && (
-        <div style={{
-          position: "fixed", inset: 0, zIndex: 100010,
-          background: "rgba(0,0,0,.55)", backdropFilter: "blur(4px)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }} onClick={() => setCatalog(false)}>
-          <div style={{
-            background: "var(--glass-2)", border: "1px solid var(--glass-stroke)",
-            borderRadius: 20, padding: "24px 22px", maxWidth: 480, width: "90vw",
-          }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em",
-                          textTransform: "uppercase", color: "var(--fg-3)", marginBottom: 16 }}>
-              Chọn thẻ thay thế
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              {CARD_CATALOG.map(card => {
-                const c = `var(--neon-${card.color})`;
-                const selected = slots[slotIndex] === card.key;
-                return (
-                  <div key={card.key} onClick={() => pickCard(card.key)} style={{
-                    padding: "14px 16px", borderRadius: 14, cursor: "pointer",
-                    border: `1px solid ${selected ? c : "var(--glass-stroke)"}`,
-                    background: selected ? `color-mix(in oklab, ${c} 12%, var(--glass-1))` : "var(--glass-1)",
-                    display: "flex", alignItems: "center", gap: 10,
-                    transition: "all 120ms",
-                  }}>
-                    <div style={{
-                      width: 34, height: 34, borderRadius: 9, flexShrink: 0,
-                      background: `linear-gradient(135deg, ${c}, color-mix(in oklab, ${c} 55%, var(--ink-0)))`,
-                      boxShadow: `0 0 12px color-mix(in oklab, ${c} 45%, transparent)`,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}>
-                      <Icon name={card.icon} size={16} color="var(--ink-0)"/>
-                    </div>
-                    <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600,
-                                   color: selected ? c : "var(--fg-1)" }}>
-                      {card.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
           </div>
         </div>
       )}
