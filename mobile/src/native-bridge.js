@@ -7,8 +7,9 @@
 //   • exposes window.MGT_SAVE_TOKEN / MGT_CLEAR_TOKEN (Capacitor Preferences);
 //   • overrides the photo picker (window.MGT_NATIVE_PICK) with the native
 //     Camera/Library prompt;
-//   • provides window.MGT_CAPTURE — a native QR capture that takes a full-res
-//     photo and decodes it OFFLINE with ML Kit (falls back to the JS cascade).
+//   • provides window.MGT_CAPTURE — a live native QR scanner via the MgtQrScanner
+//     plugin (Apple Vision/AVFoundation on iOS, CameraX + ML Kit on Android); the
+//     locked frame is the upload image (falls back to Camera.getPhoto + JS cascade).
 //
 // On the web (no window.Capacitor) it does nothing — the portal keeps its
 // cookie + file-input behaviour.
@@ -67,9 +68,34 @@
     } catch (e) { return null; }  // cancelled
   };
 
-  // MGT_CAPTURE: native override using Camera.getPhoto + client-side decode cascade.
-  // Loaded AFTER qr-capturer.js (see build.mjs), so this overwrites the ZXing
-  // getUserMedia implementation which is unreliable in WKWebView.
+  // Convert a MgtQrScanner result (a file:// URI or base64 JPEG) into an upload
+  // File. Mirrors the `toFile` idiom (convertFileSrc → fetch → blob).
+  async function scanResultToFile(res, name) {
+    name = name || "cccd-qr.jpg";
+    try {
+      if (res && res.savedUri) {
+        var url = Cap.convertFileSrc ? Cap.convertFileSrc(res.savedUri) : res.savedUri;
+        var r = await fetch(url);
+        var b = await r.blob();
+        return new File([b], name, { type: b.type || "image/jpeg" });
+      }
+      if (res && res.imageBase64) {
+        var dataUrl = res.imageBase64.indexOf("data:") === 0 ? res.imageBase64 : "data:image/jpeg;base64," + res.imageBase64;
+        var r2 = await fetch(dataUrl);
+        var b2 = await r2.blob();
+        return new File([b2], name, { type: b2.type || "image/jpeg" });
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // MGT_CAPTURE: native override. PRIMARY = the MgtQrScanner native plugin (Apple
+  // Vision/AVFoundation on iOS, CameraX + ML Kit on Android) — a live point-and-lock
+  // scanner whose locked frame doubles as the upload image. FALLBACK (plugin missing
+  // / unsupported / permission denied) = the old Camera.getPhoto + client-side
+  // ZXing/jsQR decode cascade. Loaded AFTER qr-capturer.js (see build.mjs) so it
+  // overrides the WKWebView-unreliable getUserMedia path. Set
+  // window.MGT_USE_NATIVE_QR = false (e.g. in config.js) to force the fallback.
   window.MGT_CAPTURE = {
     supported() { return true; },
     async open() {
@@ -85,40 +111,26 @@
         var cap = _vn(p[6]); if (cap) o.ngayCapCCCD = cap;
         return o;
       };
-      try {
-        // Try ML Kit barcode scanner first (fast, no camera preview needed)
-        var bs = P.BarcodeScanner;
-        if (bs && bs.isSupported) {
-          var supp = await bs.isSupported();
-          if (supp && supp.supported) {
-            var perm = await bs.checkPermissions();
-            if (perm && perm.camera !== 'granted') perm = await bs.requestPermissions();
-            if (perm && perm.camera === 'granted') {
-              var scanRes = await bs.scan({ formats: ['QR_CODE'] });
-              if (scanRes && scanRes.barcodes && scanRes.barcodes.length > 0) {
-                var raw = scanRes.barcodes[0].rawValue;
-                var fields = parseCCCD(raw);
-                // After getting QR data, prompt user to take/pick the QR photo for upload
-                try {
-                  var qrPhoto = await P.Camera.getPhoto({
-                    quality: 90, resultType: "uri", source: "PROMPT",
-                    correctOrientation: true, presentationStyle: "fullscreen",
-                    promptLabelHeader: "Chụp ảnh QR CCCD để lưu",
-                    promptLabelPhoto: "Thư viện", promptLabelPicture: "Chụp ảnh",
-                    promptLabelCancel: "Bỏ qua",
-                  });
-                  var file = await toFile(qrPhoto, "cccd-qr.jpg");
-                  return { file: file, raw: raw, fields: fields };
-                } catch (e) {
-                  // Photo step skipped — return data only (file will be null)
-                  return { file: null, raw: raw, fields: fields };
-                }
-              }
-            }
+
+      // ── PRIMARY: native live scanner (Apple Vision / CameraX+ML Kit) ──
+      var Qr = P.MgtQrScanner;
+      if (Qr && typeof Qr.scan === "function" && window.MGT_USE_NATIVE_QR !== false) {
+        try {
+          var res = await Qr.scan({ formats: ["QR_CODE"], imageReturn: "file" });
+          if (res && res.raw) {
+            var nf = await scanResultToFile(res, "cccd-qr.jpg");
+            if (nf) return { file: nf, raw: res.raw, fields: parseCCCD(res.raw) };
+            // Decoded but no usable image — fall through so an uploadable QR photo
+            // is still captured (the screens re-decode the file for auto-fill).
           }
+        } catch (e) {
+          var code = (e && (e.code || e.message)) || "";
+          if (code === "cancelled") return null;   // user backed out of the scanner
+          // unavailable / denied / busy → fall through to the photo cascade
         }
-      } catch (e) {}
-      // Fallback: take/pick a photo, decode QR client-side (avoids getUserMedia)
+      }
+
+      // ── FALLBACK: take/pick a photo, decode QR client-side (avoids getUserMedia) ──
       try {
         var photo = await P.Camera.getPhoto({
           quality: 90, resultType: "uri", source: "PROMPT",
