@@ -20,7 +20,8 @@
     "@capacitor/preferences": "^6.0.3",
     "@capacitor/splash-screen": "^6.0.3",
     "@capacitor/status-bar": "^6.0.2",
-    "@capacitor-mlkit/barcode-scanning": "^6.2.0"
+    "@capacitor-mlkit/barcode-scanning": "^6.2.0",
+    "mgt-qr-scanner": "file:plugins/qr-scanner"
   },
   "devDependencies": {
     "@babel/core": "^7.26.0",
