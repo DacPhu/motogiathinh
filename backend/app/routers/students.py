@@ -5,17 +5,15 @@ Wire shape uses English field names; DB columns are Vietnamese underneath
 """
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date
 from decimal import Decimal
 from typing import Annotated, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.core.ocr import extract_cccd_info
-from app.core.storage import upload_bytes
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser, accessible_class_ids, require_permission
 from app.models.branch import Branch
 from app.models.class_model import Class, ClassEnrollment
 from app.models.enums import GenderType, LicenseType, RoleName, StudentStatus
@@ -35,15 +33,41 @@ router = APIRouter(prefix="/students", tags=["students"])
 DEFAULT_FEES = {"A": 1995000, "A1": 565000}
 
 
+async def _get_student(db, id_str: str):
+    """Resolve student by 8-char hex prefix or full UUID string."""
+    from sqlalchemy import text
+    if len(id_str) == 8:
+        res = await db.execute(
+            text("SELECT id FROM students WHERE replace(id::text, '-', '') LIKE :p AND deleted_at IS NULL LIMIT 1"),
+            {"p": id_str + "%"},
+        )
+        row = res.first()
+        if not row:
+            return None
+        return await db.get(Student, row[0])
+    try:
+        return await db.get(Student, uuid.UUID(id_str))
+    except ValueError:
+        return None
+
+
+def _doc_url(s, col):
+    """Browser-fetchable /api/files path for a stored doc (the column holds the
+    internal MinIO URL; the served path is /api/files/students/<id>/<filename>)."""
+    v = getattr(s, col, None)
+    if not v:
+        return None
+    fn = str(v).rsplit("/", 1)[-1]
+    return f"/api/files/students/{s.id.hex[:8]}/{fn}"
+
+
 def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None) -> dict:
     licence_raw = getattr(s, "loai_bang_lai", None)
     licence_val = licence_raw.value if hasattr(licence_raw, "value") else licence_raw
     licence = license_to_wire(licence_val)
-    parts = [getattr(s, "phuong_xa", None), getattr(s, "quan_huyen", None), getattr(s, "tinh_thanh", None)]
-    que_quan = ", ".join(p for p in parts if p)
     gender_val = s.gioi_tinh.value if hasattr(s.gioi_tinh, "value") else s.gioi_tinh
     return {
-        "id": str(s.id),
+        "id": s.id.hex[:8],
         "maHV": s.ma_hoc_vien or "",
         "name": s.ten_hoc_vien or "",
         "phone": s.so_dien_thoai or "",
@@ -51,7 +75,7 @@ def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None
         "gender": gender_to_wire(gender_val),
         "idNumber": s.cccd_number or "",
         "address": s.dia_chi or "",
-        "queQuan": que_quan,
+        "noiTamTru": getattr(s, "tinh_thanh", None) or "",
         "ngayCapCCCD": iso_to_vn_date(s.cccd_issued_date) or "",
         "noiCapCCCD": s.cccd_issued_place or "",
         "classId": (
@@ -66,9 +90,19 @@ def _to_wire(s: Student, slug_map: dict, class_id_by_student: dict | None = None
         "branchId": slug_map.get(s.branch_id, str(s.branch_id) if s.branch_id else None),
         "createdAt": iso_to_vn_datetime(s.created_at) or "",
         "docs_cccd": bool(getattr(s, "cmnd_front_url", None)),
+        "docs_cccdBack": bool(getattr(s, "cmnd_back_url", None)),
+        "docs_cccdQR": bool(getattr(s, "docs_cccd_qr_url", None)),
         "docs_gksk": bool(getattr(s, "docs_gksk_url", None)),
         "docs_donDeNghi": bool(getattr(s, "docs_don_de_nghi_url", None)),
         "docs_the3x4": bool(getattr(s, "anh_the_url", None)),
+        "docs_bangLaiFront": bool(getattr(s, "docs_bang_lai_front_url", None)),
+        "docs_bangLaiBack": bool(getattr(s, "docs_bang_lai_back_url", None)),
+        "docs_cccd_url": _doc_url(s, "cmnd_front_url"),
+        "docs_cccdBack_url": _doc_url(s, "cmnd_back_url"),
+        "docs_cccdQR_url": _doc_url(s, "docs_cccd_qr_url"),
+        "docs_the3x4_url": _doc_url(s, "anh_the_url"),
+        "docs_bangLaiFront_url": _doc_url(s, "docs_bang_lai_front_url"),
+        "docs_bangLaiBack_url": _doc_url(s, "docs_bang_lai_back_url"),
         "notes": getattr(s, "ghi_chu", None),
     }
 
@@ -78,13 +112,59 @@ async def _slug_map(db) -> dict:
     return {b.id: (b.slug or str(b.id)) for b in res.scalars().all()}
 
 
+async def _student_accessible(db, current_user, student_id: uuid.UUID) -> bool:
+    """Admin → always. Collaborator → student enrolled in an assigned ACTIVE
+    class. Staff → student in the staff's branch (unchanged original behavior;
+    NOT active-gated)."""
+    if current_user.role == RoleName.admin:
+        return True
+    if current_user.role == RoleName.collaborator:
+        acc = await accessible_class_ids(db, current_user)
+        if not acc:
+            return False
+        res = await db.execute(
+            select(ClassEnrollment.id).where(
+                ClassEnrollment.student_id == student_id,
+                ClassEnrollment.class_id.in_(acc),
+                ClassEnrollment.deleted_at.is_(None),
+            ).limit(1)
+        )
+        return res.first() is not None
+    if current_user.role == RoleName.guest:
+        # Guest kiosk: only students this operator registered.
+        s = await db.get(Student, student_id)
+        return bool(s) and s.responsible_staff_id == current_user.id
+    # staff: branch scoping, exactly as before
+    if not current_user.branch_id:
+        return False
+    s = await db.get(Student, student_id)
+    return bool(s) and s.branch_id == current_user.branch_id
+
+
 @router.get("")
 async def list_students(current_user: CurrentUser, db: DB):
     # No LIMIT — frontend's payments screen needs every student its payments
     # reference; capping orphans `payment.studentId → undefined` and crashes
     # screen-payments.jsx (s.totalFee on undefined).
     query = select(Student).where(Student.deleted_at.is_(None)).order_by(Student.created_at.desc())
-    if current_user.role != RoleName.admin and current_user.branch_id:
+    # Collaborator (CTV): only students enrolled in an assigned ACTIVE class.
+    # Staff: branch-scoped exactly as before (all classes). Admin: everything.
+    if current_user.role == RoleName.guest:
+        # Guest kiosk: only students this operator registered.
+        query = query.where(Student.responsible_staff_id == current_user.id)
+    elif current_user.role == RoleName.collaborator:
+        acc = await accessible_class_ids(db, current_user)
+        if not acc:
+            return []
+        enrolled_subq = (
+            select(ClassEnrollment.student_id)
+            .where(
+                ClassEnrollment.class_id.in_(acc),
+                ClassEnrollment.deleted_at.is_(None),
+            )
+        )
+        query = query.where(Student.id.in_(enrolled_subq))
+    elif current_user.role != RoleName.admin and current_user.branch_id:
         query = query.where(Student.branch_id == current_user.branch_id)
     result = await db.execute(query)
     slug_map = await _slug_map(db)
@@ -119,7 +199,7 @@ class StudentCreateForm(BaseModel):
     gender: Optional[str] = None
     idNumber: Optional[str] = None
     address: Optional[str] = None
-    queQuan: Optional[str] = None
+    noiTamTru: Optional[str] = None
     ngayCapCCCD: Optional[str] = None
     noiCapCCCD: Optional[str] = None
     classId: str
@@ -133,9 +213,13 @@ class StudentCreateForm(BaseModel):
 
 class StudentDocsFlags(BaseModel):
     cccd: bool = False
+    cccdBack: bool = False
+    cccdQR: bool = False
     gksk: bool = False
     donDeNghi: bool = False
     the3x4: bool = False
+    bangLaiFront: bool = False
+    bangLaiBack: bool = False
 
 
 class StudentCreateRequest(BaseModel):
@@ -151,16 +235,32 @@ async def create_student(
     _perm: Annotated[None, Depends(require_permission("students", "create"))] = None,
 ):
     f = data.form
-    # Resolve the class — branch_id is derived from it
-    try:
-        cls_uuid = uuid.UUID(f.classId)
-    except ValueError:
-        raise HTTPException(400, "invalid_classId")
+    # Resolve the class — branch_id is derived from it.
+    # Guest kiosk: force the operator's single assigned class (ignore submitted classId).
+    if current_user.role == RoleName.guest:
+        if not current_user.assigned_class_id:
+            raise HTTPException(400, "guest_no_class")
+        cls_uuid = current_user.assigned_class_id
+    else:
+        try:
+            cls_uuid = uuid.UUID(f.classId)
+        except ValueError:
+            raise HTTPException(400, "invalid_classId")
     cls = await db.get(Class, cls_uuid)
     if not cls:
         raise HTTPException(400, "invalid_classId")
-    if current_user.role != RoleName.admin and current_user.branch_id != cls.branch_id:
-        raise HTTPException(403, "wrong_branch")
+    # Collaborator (CTV) only: target class must be an assigned ACTIVE class.
+    # acc is None for admin/staff → no gate (staff unchanged from original).
+    acc = await accessible_class_ids(db, current_user)
+    if acc is not None and cls.id not in acc:
+        raise HTTPException(403, "class_not_accessible")
+    # Reject duplicate CCCD — a person has one CCCD, so this is GLOBAL (not branch-scoped).
+    if f.idNumber:
+        existing = await db.execute(
+            select(Student).where(Student.cccd_number == f.idNumber, Student.deleted_at.is_(None)).limit(1)
+        )
+        if existing.scalar_one_or_none() is not None:
+            raise HTTPException(409, "duplicate_cccd")
     # Resolve fee plan + promotion to compute totalFee
     fp = None
     if f.feePlanId:
@@ -173,9 +273,11 @@ async def create_student(
     fp_amount = Decimal(fp.amount) if fp else Decimal(DEFAULT_FEES.get(f.licence, 0))
     pr_disc = Decimal(pr.gia_tri) if (pr and getattr(pr, "loai_khuyen_mai", "fixed") == "fixed") else Decimal(0)
     total_fee = max(Decimal(0), fp_amount - pr_disc)
-    # Resolve responsible staff
+    # Resolve responsible staff. Guest kiosk: the operator owns the students it creates.
     resp_uuid = None
-    if f.responsibleStaffId:
+    if current_user.role in (RoleName.guest, RoleName.collaborator):
+        resp_uuid = current_user.id
+    elif f.responsibleStaffId:
         try: resp_uuid = uuid.UUID(f.responsibleStaffId)
         except ValueError: resp_uuid = None
 
@@ -191,7 +293,7 @@ async def create_student(
         cccd_issued_place=f.noiCapCCCD or None,
         so_dien_thoai=f.phone or "",
         dia_chi=f.address or None,
-        tinh_thanh=f.queQuan or None,
+        tinh_thanh=f.noiTamTru or None,
         loai_bang_lai=LicenseType(license_to_db(f.licence)),
         trang_thai=StudentStatus.active,
         ghi_chu=f.notes or None,
@@ -234,7 +336,7 @@ class StudentUpdateRequest(BaseModel):
     gender: Optional[str] = None
     idNumber: Optional[str] = None
     address: Optional[str] = None
-    queQuan: Optional[str] = None
+    noiTamTru: Optional[str] = None
     ngayCapCCCD: Optional[str] = None
     noiCapCCCD: Optional[str] = None
     licence: Optional[str] = None
@@ -253,12 +355,10 @@ async def update_student(
     db: DB,
     _perm: Annotated[None, Depends(require_permission("students", "update"))] = None,
 ):
-    try: s_uuid = uuid.UUID(student_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    s = await db.get(Student, s_uuid)
+    s = await _get_student(db, student_id)
     if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
+    if not await _student_accessible(db, current_user, s.id):
+        raise HTTPException(403, "class_not_accessible")
 
     fields = data.model_dump(exclude_unset=True)
     if "name" in fields:        s.ten_hoc_vien = fields["name"]
@@ -267,7 +367,7 @@ async def update_student(
     if "gender" in fields:      s.gioi_tinh = GenderType(gender_to_db(fields["gender"]) or "other")
     if "idNumber" in fields:    s.cccd_number = fields["idNumber"] or None
     if "address" in fields:     s.dia_chi = fields["address"] or None
-    if "queQuan" in fields:     s.tinh_thanh = fields["queQuan"] or None
+    if "noiTamTru" in fields:   s.tinh_thanh = fields["noiTamTru"] or None
     if "ngayCapCCCD" in fields: s.cccd_issued_date = vn_to_iso_date(fields["ngayCapCCCD"])
     if "noiCapCCCD" in fields:  s.cccd_issued_place = fields["noiCapCCCD"] or None
     if "licence" in fields:     s.loai_bang_lai = LicenseType(license_to_db(fields["licence"]))
@@ -303,82 +403,5 @@ async def update_student(
     return _to_wire(s, slug_map)
 
 
-# ── Docs upload / delete ────────────────────────────────────────────────────
-DOC_KEYS = {"cccd", "gksk", "donDeNghi", "the3x4"}
-
-
-@router.post("/{student_id}/docs/{key}", status_code=201)
-async def upload_doc(
-    student_id: str,
-    key: str,
-    file: UploadFile = File(...),
-    current_user: CurrentUser = None,
-    db: DB = None,
-    _perm: Annotated[None, Depends(require_permission("students", "update"))] = None,
-):
-    if key not in DOC_KEYS:
-        raise HTTPException(400, "invalid_key")
-    try: s_uuid = uuid.UUID(student_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    s = await db.get(Student, s_uuid)
-    if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
-    content = await file.read()
-    if len(content) > 8 * 1024 * 1024:
-        raise HTTPException(400, "file_too_large")
-    ext = (file.filename or "").rsplit(".", 1)[-1].lower() or "bin"
-    object_key = f"students/{student_id}/{key}-{int(datetime.now(timezone.utc).timestamp()*1000)}.{ext}"
-    url = upload_bytes(object_key, content, content_type=file.content_type or "application/octet-stream")
-    if key == "cccd":      s.cmnd_front_url = url
-    elif key == "gksk":    s.docs_gksk_url = url
-    elif key == "donDeNghi": s.docs_don_de_nghi_url = url
-    elif key == "the3x4":  s.anh_the_url = url
-    await db.commit()
-    return {"ok": True, "key": key, "url": url, "size": len(content)}
-
-
-@router.delete("/{student_id}/docs/{key}")
-async def delete_doc(
-    student_id: str,
-    key: str,
-    current_user: CurrentUser,
-    db: DB,
-    _perm: Annotated[None, Depends(require_permission("students", "update"))] = None,
-):
-    if key not in DOC_KEYS:
-        raise HTTPException(400, "invalid_key")
-    try: s_uuid = uuid.UUID(student_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    s = await db.get(Student, s_uuid)
-    if not s: raise HTTPException(404, "student_not_found")
-    if current_user.role != RoleName.admin and current_user.branch_id != s.branch_id:
-        raise HTTPException(403, "wrong_branch")
-    if key == "cccd":      s.cmnd_front_url = None
-    elif key == "gksk":    s.docs_gksk_url = None
-    elif key == "donDeNghi": s.docs_don_de_nghi_url = None
-    elif key == "the3x4":  s.anh_the_url = None
-    await db.commit()
-    return {"ok": True, "key": key}
-
-
-@router.get("/{student_id}/payments")
-async def get_student_payments(student_id: str, current_user: CurrentUser, db: DB):
-    """Frontend-compat alias: GET /api/students/{id}/payments returns the
-    student's full payment ledger (tuition + rental)."""
-    try: s_uuid = uuid.UUID(student_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    from app.models.payment import Payment
-    from app.utils.dates import method_to_wire
-    result = await db.execute(
-        select(Payment).where(Payment.student_id == s_uuid, Payment.deleted_at.is_(None))
-        .order_by(Payment.collected_at.desc())
-    )
-    return [{
-        "id": str(p.id), "studentId": str(p.student_id), "branchId": str(p.branch_id),
-        "amount": int(float(p.so_tien or 0)),
-        "method": method_to_wire(p.phuong_thuc.value if hasattr(p.phuong_thuc, "value") else p.phuong_thuc),
-        "bienLaiId": getattr(p, "so_bien_lai_id", None) or p.ma_giao_dich or "",
-        "kind": getattr(p, "kind", "tuition"),
-        "createdAt": iso_to_vn_datetime(p.collected_at or p.payment_date) or "",
-    } for p in result.scalars().all()]
+# Docs upload/delete + the per-student payments alias live in
+# routers/student_docs.py (kept separate to stay under the 400-line cap).

@@ -1,0 +1,117 @@
+name: Build mobile apps
+
+# Builds the Capacitor CTV app for Android (sideloadable debug APK) and iOS
+# (unsigned simulator build — proves it compiles). This is the always-on,
+# secret-free push check. For SIGNED ad-hoc or TestFlight builds, see the
+# separate manual workflow ios-distribute.yml (+ docs/ios-distribution.md).
+#
+# Native projects (android/, ios/) are gitignored, so CI regenerates them with
+# `cap add` from the committed web source + config each run.
+
+on:
+  workflow_dispatch:        # manual "Run workflow" button
+  push:
+    paths:
+      - 'mobile/**'
+      - 'frontend/**'
+      - '.github/workflows/mobile-build.yml'
+
+jobs:
+  android:
+    name: Android (debug APK)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install deps + build web bundle
+        run: |
+          npm install
+          npm run build
+
+      - name: Add + sync Android
+        run: |
+          npx cap add android
+          npx cap sync android
+
+      - name: Generate app icons
+        run: npx capacitor-assets generate --android
+
+      - name: Build debug APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motogiathinh-ctv-debug-apk
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS (unsigned simulator build)
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps + build web bundle
+        run: |
+          npm install
+          npm run build
+
+      - name: Add + sync iOS + patch Info.plist
+        run: |
+          npx cap add ios
+          npx cap sync ios
+          node patch-native.mjs
+
+      - name: Generate app icons
+        run: npx capacitor-assets generate --ios
+
+      - name: pod install
+        run: |
+          cd ios/App
+          pod install
+
+      - name: Build (iphonesimulator, no code signing)
+        run: |
+          cd ios/App
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Zip the .app
+        run: |
+          cd ios/App/build/Build/Products/Debug-iphonesimulator
+          zip -qr "$GITHUB_WORKSPACE/MotoGiaThinhCTV-sim.app.zip" App.app
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motogiathinh-ctv-ios-simulator-app
+          path: MotoGiaThinhCTV-sim.app.zip
+          if-no-files-found: error

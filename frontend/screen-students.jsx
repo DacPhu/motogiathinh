@@ -208,7 +208,7 @@ function StudentsScreen({ onOpenStudent, onAddStudent }) {
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-3)", fontVariantNumeric: "tabular-nums" }}>{s.id}</span>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--fg-2)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{s.maHV}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-                <Avatar name={s.name} size={32}/>
+                <Avatar name={s.name} size={32} src={s.docs_the3x4_url || null}/>
                 <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
                   <span style={{ fontFamily: "var(--font-ui)", fontSize: 14, fontWeight: 600, color: "var(--fg-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-3)", fontVariantNumeric: "tabular-nums" }}>{window.fmtPhone(s.phone)}</span>
@@ -262,7 +262,7 @@ function StudentDetail({ studentId, initialTab, initialPaymentId, onBack, onOpen
       {/* Top section */}
       <GlassCard padding={26}>
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-          <Avatar name={s.name} size={64} glow/>
+          <Avatar name={s.name} size={64} glow src={s.docs_the3x4_url || null}/>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
             <h2 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 28, fontWeight: 600, color: "var(--fg-1)", letterSpacing: "-0.025em" }}>{s.name}</h2>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -277,7 +277,8 @@ function StudentDetail({ studentId, initialTab, initialPaymentId, onBack, onOpen
 
       <PillTabs value={tab} onChange={setTab} tabs={[
         { id: "info",     label: "Thông tin" },
-        { id: "payments", label: "Thanh toán", count: studentPayments.length },
+        // Payments tab only for roles with payments read (hidden for CTV).
+        ...(D.can("payments", "read") ? [{ id: "payments", label: "Thanh toán", count: studentPayments.length }] : []),
       ]}/>
 
       {tab === "info" && <StudentInfoTab s={s} cls={cls} staff={staff} branch={branch}
@@ -285,7 +286,7 @@ function StudentDetail({ studentId, initialTab, initialPaymentId, onBack, onOpen
                                           docs={docs} setDocs={setDocs}
                                           docsFilledCount={docsFilledCount}/>}
 
-      {tab === "payments" && (
+      {tab === "payments" && D.can("payments", "read") && (
         <StudentPaymentsTab student={s} payments={studentPayments}
                              initialPaymentId={initialPaymentId}
                              onAddPayment={onAddPayment}/>
@@ -359,7 +360,7 @@ function StudentInfoTab({ s, cls, staff, branch, feePlan, promo, docs, setDocs, 
               <RowField label="Họ và tên"      value={s.name}/>
               <RowField label="Ngày sinh"      value={s.dob}                 mono/>
               <RowField label="Giới tính"      value={s.gender}/>
-              <RowField label="Quê quán"       value={s.queQuan || s.address}/>
+              <RowField label="Nơi tạm trú"    value={s.noiTamTru || s.address}/>
               <RowField label="Nơi thường trú" value={s.address}/>
               <RowField label="Ngày cấp"       value={s.ngayCapCCCD || "—"}  mono/>
               {/* Last row — drop the bottom border for clean edge */}

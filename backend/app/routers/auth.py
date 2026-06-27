@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Response
 
 from app.core.security import SESSION_TTL_DAYS
-from app.dependencies import DB, SESSION_COOKIE, CurrentUser, resolve_branch_slug
+from app.dependencies import DB, SESSION_COOKIE, CurrentUser, load_user_assignments, resolve_branch_slug
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -16,11 +16,13 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 def _set_session_cookie(response: Response, token: str) -> None:
+    from app.config import settings
     response.set_cookie(
         key=SESSION_COOKIE,
         value=token,
         httponly=True,
         samesite="lax",
+        secure=not settings.DEBUG,
         max_age=SESSION_TTL_DAYS * 24 * 3600,
         path="/",
     )
@@ -31,7 +33,12 @@ async def login(data: LoginRequest, db: DB, response: Response):
     user, token = await AuthService(db).login(data)
     _set_session_cookie(response, token)
     branch_slug = await resolve_branch_slug(db, user)
-    return LoginResponse(user=WireUser.from_user(user, branch_id_override=branch_slug))
+    assignments = (await load_user_assignments(db, [user.id])).get(user.id, {})
+    return LoginResponse(user=WireUser.from_user(
+        user, branch_id_override=branch_slug,
+        branch_ids=assignments.get("branchIds", []),
+        class_ids=assignments.get("classIds", []),
+    ), token=token)
 
 
 @router.post("/logout")

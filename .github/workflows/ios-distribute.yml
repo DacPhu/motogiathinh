@@ -1,0 +1,277 @@
+name: Build iOS (ad-hoc / TestFlight)
+
+# Builds a SIGNED iOS build of the Capacitor CTV app and distributes it one of
+# two ways, chosen at run time via the `method` input:
+#   • ad-hoc     → a .ipa installable on the specific devices (UDIDs) baked into
+#                  the ad-hoc provisioning profile; downloaded as a build artifact.
+#   • testflight → an App Store-signed .ipa uploaded to App Store Connect /
+#                  TestFlight for invite-by-email testers (no UDIDs).
+#
+# Manual-only (workflow_dispatch). Native ios/ is gitignored and regenerated here
+# via `cap add`, so signing is applied at build/export time (CLI build settings +
+# ExportOptions.plist), never baked into the disposable Xcode project. The build
+# number is the GitHub run number (monotonic + unique — required by TestFlight).
+#
+# REQUIRED SECRETS (see docs/ios-distribution.md for how to create each):
+#   Shared (both methods):
+#     IOS_DIST_CERT_P12_BASE64    — base64 of the Apple Distribution cert + private key (.p12)
+#     IOS_DIST_CERT_PASSWORD      — the .p12 export password
+#     IOS_TEAM_ID                 — 10-char Apple Team ID
+#     KEYCHAIN_PASSWORD           — any throwaway string for the temporary keychain
+#   ad-hoc only:
+#     IOS_ADHOC_PROFILE_BASE64    — base64 of the ad-hoc .mobileprovision
+#   testflight only:
+#     IOS_APPSTORE_PROFILE_BASE64 — base64 of the App Store .mobileprovision
+#     ASC_KEY_ID                  — App Store Connect API key ID
+#     ASC_ISSUER_ID               — App Store Connect API issuer ID
+#     ASC_KEY_P8_BASE64           — base64 of the App Store Connect API key (.p8)
+
+on:
+  workflow_dispatch:
+    inputs:
+      method:
+        description: 'Distribution method'
+        type: choice
+        options:
+          - ad-hoc
+          - testflight
+        default: ad-hoc
+      marketing_version:
+        description: 'Marketing version (CFBundleShortVersionString), e.g. 1.0'
+        required: false
+        default: '1.0'
+
+permissions:
+  contents: read
+
+env:
+  BUNDLE_ID: vn.motogiathinh.ctv
+
+jobs:
+  build:
+    name: iOS ${{ inputs.method }}
+    runs-on: macos-14
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      # Fail fast (before checkout) with an actionable message if the secrets
+      # this method needs aren't set. Runs at workspace root since mobile/ doesn't
+      # exist yet.
+      - name: Preflight — verify the secrets for this method are present
+        shell: bash
+        working-directory: .
+        env:
+          METHOD: ${{ inputs.method }}
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          IOS_ADHOC_PROFILE_BASE64: ${{ secrets.IOS_ADHOC_PROFILE_BASE64 }}
+          IOS_APPSTORE_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          req="IOS_DIST_CERT_P12_BASE64 IOS_DIST_CERT_PASSWORD IOS_TEAM_ID KEYCHAIN_PASSWORD"
+          if [ "$METHOD" = "ad-hoc" ]; then
+            req="$req IOS_ADHOC_PROFILE_BASE64"
+          else
+            req="$req IOS_APPSTORE_PROFILE_BASE64 ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8_BASE64"
+          fi
+          missing=()
+          for s in $req; do
+            if [ -z "${!s}" ]; then missing+=("$s"); fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing required secret(s) for method '$METHOD': ${missing[*]}"
+            echo "These have not been added to this repo's Actions secrets yet."
+            echo "Follow docs/ios-distribution.md to create the Apple signing material and set them."
+            exit 1
+          fi
+          echo "Method '$METHOD' — all required secrets are present."
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps + build web bundle
+        run: |
+          npm install
+          npm run build
+
+      - name: Add + sync iOS + patch Info.plist
+        run: |
+          npx cap add ios
+          npx cap sync ios
+          node patch-native.mjs
+
+      - name: pod install
+        working-directory: mobile/ios/App
+        run: pod install
+
+      - name: Import signing certificate & provisioning profile
+        shell: bash
+        env:
+          METHOD: ${{ inputs.method }}
+          IOS_DIST_CERT_P12_BASE64: ${{ secrets.IOS_DIST_CERT_P12_BASE64 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_ADHOC_PROFILE_BASE64: ${{ secrets.IOS_ADHOC_PROFILE_BASE64 }}
+          IOS_APPSTORE_PROFILE_BASE64: ${{ secrets.IOS_APPSTORE_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/dist_cert.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          # Decode the distribution cert + the profile for the chosen method.
+          echo -n "$IOS_DIST_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+          if [ "$METHOD" = "ad-hoc" ]; then
+            echo -n "$IOS_ADHOC_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+          else
+            echo -n "$IOS_APPSTORE_PROFILE_BASE64" | base64 --decode -o "$PROFILE_PATH"
+          fi
+
+          # Throwaway keychain so nothing persists on the runner.
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          # Import the dist cert + key; let codesign use it non-interactively.
+          security import "$CERT_PATH" -P "$IOS_DIST_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          # Install the profile under its UUID; extract its Name for ExportOptions
+          # + the archive's PROVISIONING_PROFILE_SPECIFIER.
+          security cms -D -i "$PROFILE_PATH" > "$RUNNER_TEMP/pp.plist"
+          PROFILE_NAME=$(/usr/libexec/PlistBuddy -c "Print :Name" "$RUNNER_TEMP/pp.plist")
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print :UUID" "$RUNNER_TEMP/pp.plist")
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+          cp "$PROFILE_PATH" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+
+          echo "PROFILE_NAME=$PROFILE_NAME" >> "$GITHUB_ENV"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "Imported profile: '$PROFILE_NAME' ($PROFILE_UUID)"
+
+      - name: Write ExportOptions.plist
+        shell: bash
+        env:
+          METHOD: ${{ inputs.method }}
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          if [ "$METHOD" = "testflight" ]; then EXPORT_METHOD="app-store"; else EXPORT_METHOD="ad-hoc"; fi
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>${EXPORT_METHOD}</string>
+            <key>teamID</key>
+            <string>${IOS_TEAM_ID}</string>
+            <key>signingStyle</key>
+            <string>manual</string>
+            <key>signingCertificate</key>
+            <string>Apple Distribution</string>
+            <key>provisioningProfiles</key>
+            <dict>
+              <key>${BUNDLE_ID}</key>
+              <string>${PROFILE_NAME}</string>
+            </dict>
+            <key>compileBitcode</key>
+            <false/>
+            <key>stripSwiftSymbols</key>
+            <true/>
+            <key>destination</key>
+            <string>export</string>
+          </dict>
+          </plist>
+          PLIST
+          echo "Export method: $EXPORT_METHOD"
+          cat "$RUNNER_TEMP/ExportOptions.plist"
+
+      - name: Archive (Release, manual signing)
+        working-directory: mobile/ios/App
+        shell: bash
+        env:
+          IOS_TEAM_ID: ${{ secrets.IOS_TEAM_ID }}
+          MARKETING_VERSION: ${{ inputs.marketing_version }}
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -destination 'generic/platform=iOS' \
+            archive \
+            DEVELOPMENT_TEAM="$IOS_TEAM_ID" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Apple Distribution" \
+            PROVISIONING_PROFILE_SPECIFIER="$PROFILE_NAME" \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" \
+            MARKETING_VERSION="$MARKETING_VERSION"
+
+      - name: Export .ipa
+        shell: bash
+        env:
+          METHOD: ${{ inputs.method }}
+        run: |
+          set -euo pipefail
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/App.xcarchive" \
+            -exportPath "$RUNNER_TEMP/ipa" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist"
+          # Rename the scheme-named output (App.ipa) to a friendly, method-tagged name.
+          shopt -s nullglob
+          ipas=("$RUNNER_TEMP/ipa/"*.ipa)
+          if [ ${#ipas[@]} -eq 0 ]; then echo "::error::exportArchive produced no .ipa"; exit 1; fi
+          mv "${ipas[0]}" "$RUNNER_TEMP/ipa/MotoGiaThinhCTV-${METHOD}.ipa"
+          ls -la "$RUNNER_TEMP/ipa"
+
+      - name: Upload to TestFlight
+        if: ${{ inputs.method == 'testflight' }}
+        shell: bash
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8_BASE64: ${{ secrets.ASC_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          # altool finds the key by convention at ~/.appstoreconnect/private_keys/AuthKey_<id>.p8
+          KEYS_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEYS_DIR"
+          echo -n "$ASC_KEY_P8_BASE64" | base64 --decode -o "$KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          xcrun altool --upload-app \
+            -f "$RUNNER_TEMP/ipa/MotoGiaThinhCTV-testflight.ipa" \
+            -t ios \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID"
+          rm -f "$KEYS_DIR/AuthKey_${ASC_KEY_ID}.p8"
+          echo "Uploaded to App Store Connect. It appears in TestFlight after processing (a few minutes)."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motogiathinh-ctv-ios-${{ inputs.method }}
+          path: |
+            ${{ runner.temp }}/ipa/*.ipa
+            ${{ runner.temp }}/ipa/DistributionSummary.plist
+            ${{ runner.temp }}/ipa/Packaging.log
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Clean up keychain
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${KEYCHAIN_PATH:-}" ] && [ -f "$KEYCHAIN_PATH" ]; then
+            security delete-keychain "$KEYCHAIN_PATH" || true
+          fi

@@ -26,8 +26,8 @@ def _to_wire(p: Payment, slug_map: dict) -> dict:
     method_raw = getattr(p, "phuong_thuc", None)
     method_val = method_raw.value if hasattr(method_raw, "value") else method_raw
     return {
-        "id": str(p.id),
-        "studentId": str(p.student_id) if p.student_id else None,
+        "id": p.id.hex[:8],
+        "studentId": p.student_id.hex[:8] if p.student_id else None,
         "branchId": slug_map.get(p.branch_id, str(p.branch_id) if p.branch_id else None),
         "staffId": str(p.collected_by) if p.collected_by else None,
         "amount": int(float(p.so_tien or 0)),

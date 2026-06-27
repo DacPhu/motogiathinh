@@ -68,7 +68,12 @@ async def _branch_id_from_slug(db, slug_or_uuid: str) -> Optional[uuid.UUID]:
 @router.get("")
 async def list_classes(current_user: CurrentUser, db: DB):
     query = select(Class).where(Class.deleted_at.is_(None)).order_by(Class.ngay_khai_giang.desc())
-    if current_user.role != RoleName.admin and current_user.branch_id:
+    if current_user.role == RoleName.guest:
+        # Guest kiosk: only the single class it is assigned to.
+        if not current_user.assigned_class_id:
+            return []
+        query = query.where(Class.id == current_user.assigned_class_id)
+    elif current_user.role != RoleName.admin and current_user.branch_id:
         query = query.where(Class.branch_id == current_user.branch_id)
     result = await db.execute(query)
     slug_map = await _slug_map(db)

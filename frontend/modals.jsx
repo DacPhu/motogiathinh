@@ -1,5 +1,5 @@
 // ====================================================================
-// Modals: AddStudent (with doc slots + OCR auto-fill + dropdowns)
+// Modals: AddStudent (with doc slots + QR auto-fill + dropdowns)
 //         AddPayment
 //         AddClass
 // ====================================================================
@@ -11,57 +11,64 @@ function AddStudentModal({ open, onClose, onSave }) {
   const D = window.MGT_DATA;
   const [form, setForm] = React.useState({
     name: "", gender: "", dob: "", idNumber: "", address: "", phone: "",
-    queQuan: "", ngayCapCCCD: "", noiCapCCCD: "", notes: "",
+    noiTamTru: "", ngayCapCCCD: "", noiCapCCCD: "", notes: "",
     classId: "", feePlanId: "", promotionId: "", responsibleStaffId: "",
   });
-  const [docs, setDocs] = React.useState({ cccd: false, gksk: false, donDeNghi: false, the3x4: false });
+  const [docs, setDocs] = React.useState(() => Object.fromEntries((D.PROFILE_DOCS || []).map(d => [d.key, false])));
   // Captured File objects (per doc key). Uploaded after the student is
   // created — we need the student id before POSTing to /students/:id/docs/:key.
   const [docFiles, setDocFiles] = React.useState({});
-  const [ocrToast, setOcrToast] = React.useState(null);    // null | {msg, kind}
-  const [ocrBusy,  setOcrBusy]  = React.useState(false);
+  const [qrToast, setQrToast] = React.useState(null);    // null | {msg, kind}
+  const [qrBusy,  setQrBusy]  = React.useState(false);
 
-  // Drop a doc → mark filled, stash the File, and for CCCD specifically
-  // run real OCR via tesseract.js (POST /api/ocr/cccd). Returned fields
-  // populate the form, skipping any field the user already typed.
+  // Drop a doc → mark filled, stash the File, and for the QR slot
+  // specifically scan the CCCD QR locally via window.MGT_QR. Returned
+  // fields populate the form, skipping any field the user already typed.
   const handleDocDrop = async (key, file) => {
     setDocs(prev => ({ ...prev, [key]: true }));
     if (file) setDocFiles(prev => ({ ...prev, [key]: file }));
-    if (key !== "cccd" || !file) return;
-    setOcrBusy(true);
-    setOcrToast({ kind: "info", msg: "Đang quét CCCD bằng OCR (vie+eng)…" });
+    if (key !== "cccdQR" || !file) return;
+    setQrBusy(true);
+    setQrToast({ kind: "info", msg: "Đang đọc mã QR…" });
     try {
-      const out = await D.api.ocrCccd(file);
-      const f = out.fields || {};
-      const applied = [];
-      setForm(prev => {
-        const next = { ...prev };
-        const set = (k, v) => { if (v && !prev[k]) { next[k] = v; applied.push(k); } };
-        set("idNumber",    f.idNumber);
-        set("name",        f.name);
-        set("dob",         f.dob);
-        set("gender",      f.gender);
-        set("queQuan",     f.queQuan);
-        set("address",     f.address);
-        set("ngayCapCCCD", f.ngayCapCCCD);
-        return next;
-      });
-      const engine = out.engine || "vision";
-      const enginePrefix = engine === "microservice" ? "(VietOCR) " : "";
-      let msg;
-      if (applied.length) {
-        msg = `${enginePrefix}OCR đã điền ${applied.length} trường`;
-      } else if ((out.raw || "").trim()) {
-        msg = `${enginePrefix}OCR đọc được chữ nhưng không khớp mẫu CCCD — có thể là mặt sau hoặc ảnh không rõ. Hãy thử ảnh khác.`;
-      } else {
-        msg = `${enginePrefix}Không trích xuất được trường nào (engine: ${engine}) — kiểm tra lại ảnh hoặc nhập thủ công.`;
+      const out = await window.MGT_QR.scanFile(file);
+      const f = (out && out.fields) || {};
+      // Convert the old (pre-2025-reform) address to its new form before it
+      // populates the form (both Nơi thường trú + Nơi tạm trú derive from it).
+      if (out && out.ok && f.address && D.api && D.api.convertAddress) {
+        setQrToast({ kind: "info", msg: "Đang cập nhật địa chỉ…" });
+        try { const c = await D.api.convertAddress(f.address); if (c && c.converted) f.address = c.converted; } catch (e) {}
       }
-      setOcrToast({ kind: applied.length ? "ok" : "warn", msg });
+      const applied = [];
+      if (out && out.ok) {
+        setForm(prev => {
+          const next = { ...prev };
+          // QR is the official document → authoritative. Overwrite every
+          // field it reads, even ones the user already typed.
+          const set = (k, v) => { if (v) { next[k] = v; applied.push(k); } };
+          set("idNumber",    f.idNumber);
+          set("name",        f.name);
+          set("dob",         f.dob);
+          set("gender",      f.gender);
+          set("address",     f.address);
+          set("ngayCapCCCD", f.ngayCapCCCD);
+          // Nơi tạm trú defaults to the QR's Nơi thường trú (staff can edit);
+          // Nơi cấp defaults to the standard issuing authority.
+          set("noiTamTru",   f.address);
+          next.noiCapCCCD = "Cục CS QLHC về TTXH"; applied.push("noiCapCCCD");
+          return next;
+        });
+      }
+      if (out && out.ok && applied.length) {
+        setQrToast({ kind: "ok", msg: `QR đã điền ${applied.length} trường` });
+      } else {
+        setQrToast({ kind: "warn", msg: "Không đọc được mã QR — chụp lại ảnh rõ mã QR hơn." });
+      }
     } catch (e) {
-      setOcrToast({ kind: "err", msg: "OCR thất bại: " + (e.message || e) });
+      setQrToast({ kind: "err", msg: "Quét QR thất bại: " + (e.message || e) });
     } finally {
-      setOcrBusy(false);
-      setTimeout(() => setOcrToast(null), 4500);
+      setQrBusy(false);
+      setTimeout(() => setQrToast(null), 4500);
     }
   };
 
@@ -78,16 +85,27 @@ function AddStudentModal({ open, onClose, onSave }) {
     ? selectedFeePlan.amount - (selectedPromo ? selectedPromo.discount : 0)
     : 0;
 
-  const docsCount = Object.values(docs).filter(Boolean).length;
+  const requiredDocs = (D.PROFILE_DOCS || []).filter(d => d.required !== false);
+  // Modal-only slot order: swap "Giấy khám sức khỏe" (gksk) and "Thẻ 3×4"
+  // (the3x4). Backend PROFILE_DOCS order is left untouched (detail screen
+  // keeps the canonical order).
+  const modalDocs = (() => {
+    const arr = [...(D.PROFILE_DOCS || [])];
+    const gi = arr.findIndex(d => d.key === "gksk");
+    const ti = arr.findIndex(d => d.key === "the3x4");
+    if (gi >= 0 && ti >= 0) { const tmp = arr[gi]; arr[gi] = arr[ti]; arr[ti] = tmp; }
+    return arr;
+  })();
+  const docsComplete = requiredDocs.every(d => docs[d.key]);
   const REQUIRED_FIELDS = ["name", "gender", "dob", "idNumber", "address", "phone", "classId", "feePlanId", "promotionId", "responsibleStaffId"];
   const allFieldsFilled = REQUIRED_FIELDS.every(k => form[k]);
-  const profileComplete = docsCount === 4 && allFieldsFilled;
+  const profileComplete = docsComplete && allFieldsFilled;
 
   // reset on close
   React.useEffect(() => {
     if (!open) {
-      setForm({ name: "", gender: "", dob: "", idNumber: "", address: "", phone: "", queQuan: "", ngayCapCCCD: "", noiCapCCCD: "", notes: "", classId: "", feePlanId: "", promotionId: "", responsibleStaffId: "" });
-      setDocs({ cccd: false, gksk: false, donDeNghi: false, the3x4: false });
+      setForm({ name: "", gender: "", dob: "", idNumber: "", address: "", phone: "", noiTamTru: "", ngayCapCCCD: "", noiCapCCCD: "", notes: "", classId: "", feePlanId: "", promotionId: "", responsibleStaffId: "" });
+      setDocs(Object.fromEntries((D.PROFILE_DOCS || []).map(d => [d.key, false])));
       setDocFiles({});
     }
   }, [open]);
@@ -116,20 +134,20 @@ function AddStudentModal({ open, onClose, onSave }) {
                </span>
              ) : !profileComplete ? (
                <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-amber)" }}>
-                 Còn {4 - docsCount} ô tài liệu và {REQUIRED_FIELDS.filter(k=>!form[k]).length} trường chưa điền.
+                 Còn {requiredDocs.filter(d => !docs[d.key]).length} ô tài liệu và {REQUIRED_FIELDS.filter(k=>!form[k]).length} trường chưa điền.
                </span>
              ) : null
            }>
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {/* OCR status — pinned at top. info/ok/warn/err tones map to
+        {/* QR status — pinned at top. info/ok/warn/err tones map to
             cyan / lime / amber / pink. */}
-        {ocrToast && (() => {
-          const tone = ocrToast.kind === "ok"   ? "var(--neon-lime)"
-                     : ocrToast.kind === "warn" ? "var(--neon-amber)"
-                     : ocrToast.kind === "err"  ? "var(--neon-pink)"
+        {qrToast && (() => {
+          const tone = qrToast.kind === "ok"   ? "var(--neon-lime)"
+                     : qrToast.kind === "warn" ? "var(--neon-amber)"
+                     : qrToast.kind === "err"  ? "var(--neon-pink)"
                      : "var(--neon-cyan)";
-          const icon = ocrToast.kind === "ok" ? "check"
-                     : ocrToast.kind === "err" || ocrToast.kind === "warn" ? "x"
+          const icon = qrToast.kind === "ok" ? "check"
+                     : qrToast.kind === "err" || qrToast.kind === "warn" ? "x"
                      : "clock";
           return (
             <div style={{
@@ -141,9 +159,9 @@ function AddStudentModal({ open, onClose, onSave }) {
             }}>
               <Icon name={icon} size={14} color={tone}/>
               <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-1)", flex: 1 }}>
-                {ocrToast.msg}
+                {qrToast.msg}
               </span>
-              {ocrBusy && <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: tone, letterSpacing: "0.1em" }}>…</span>}
+              {qrBusy && <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: tone, letterSpacing: "0.1em" }}>…</span>}
             </div>
           );
         })()}
@@ -154,7 +172,7 @@ function AddStudentModal({ open, onClose, onSave }) {
             <SectionTitle>Thông tin cá nhân</SectionTitle>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div style={{ gridColumn: "span 2" }}>
-                <Input label="Số CCCD"        value={form.idNumber}    onChange={v => setForm({ ...form, idNumber: v })}    placeholder="079 202 155 678"
+                <Input label="Số CCCD"        value={form.idNumber}    onChange={v => setForm({ ...form, idNumber: v })}    placeholder="123 456 789012"
                        digits maxDigits={12} format={window.fmtCCCD}/>
               </div>
               <div style={{ gridColumn: "span 2" }}>
@@ -162,12 +180,14 @@ function AddStudentModal({ open, onClose, onSave }) {
               </div>
               <Input label="Ngày sinh"        value={form.dob}         onChange={v => setForm({ ...form, dob: v })}         placeholder="dd/mm/yyyy"
                      digits maxDigits={8} format={window.fmtDateInput} storeFormatted/>
-              <Input label="Giới tính"        value={form.gender}      onChange={v => setForm({ ...form, gender: v })}      placeholder="Nam / Nữ"/>
+              <Select label="Giới tính"       value={form.gender}      onChange={v => setForm({ ...form, gender: v })}
+                      placeholder="Chọn giới tính"
+                      options={[{ value: "Nam", label: "Nam" }, { value: "Nữ", label: "Nữ" }]}/>
               <div style={{ gridColumn: "span 2" }}>
-                <Input label="Quê quán"       value={form.queQuan}     onChange={v => setForm({ ...form, queQuan: v })}     placeholder="Bến Tre"/>
+                <Input label="Nơi tạm trú"    value={form.noiTamTru}   onChange={v => setForm({ ...form, noiTamTru: v })}   placeholder="Số nhà, Thành phố, Tỉnh"/>
               </div>
               <div style={{ gridColumn: "span 2" }}>
-                <Input label="Nơi thường trú" value={form.address}     onChange={v => setForm({ ...form, address: v })}     placeholder="Số nhà, đường, phường, quận"/>
+                <Input label="Nơi thường trú" value={form.address}     onChange={v => setForm({ ...form, address: v })}     placeholder="Số nhà, Thành phố, Tỉnh"/>
               </div>
               <Input label="Ngày cấp"         value={form.ngayCapCCCD} onChange={v => setForm({ ...form, ngayCapCCCD: v })} placeholder="dd/mm/yyyy"
                      digits maxDigits={8} format={window.fmtDateInput} storeFormatted/>
@@ -240,7 +260,7 @@ function AddStudentModal({ open, onClose, onSave }) {
             </span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
-            {D.PROFILE_DOCS.map(doc => (
+            {modalDocs.map(doc => (
               <DocSlot key={doc.key} doc={doc} filled={docs[doc.key]}
                        onDrop={handleDocDrop}
                        onClear={(k) => setDocs({ ...docs, [k]: false })}

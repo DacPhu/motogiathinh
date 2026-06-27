@@ -1,0 +1,17 @@
+node_modules/
+www/
+android/
+ios/
+dist/
+.gradle/
+*.keystore
+.DS_Store
+
+# Local Capacitor plugins (e.g. plugins/qr-scanner): commit their source. The
+# generic android/ ios/ dist/ rules above target the *generated app* projects,
+# not these in-repo plugins. Keep generated build output out, though.
+!plugins/
+!plugins/**
+plugins/**/build/
+plugins/**/.gradle/
+plugins/**/node_modules/

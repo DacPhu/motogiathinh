@@ -3,17 +3,10 @@
 //             giáo viên / phương tiện / nhật ký
 // ====================================================================
 
-// Password complexity checklist — mirrors backend/auth.js passwordPolicy.
-// Used by both the "Tạo tài khoản mới" dialog and PasswordResetModal so
-// the rules shown match what the server will accept on submit.
 const PASSWORD_CHECKS = [
-  { label: "≥ 8 ký tự",                       test: (v) => (v || "").length >= 8 },
-  { label: "≥ 1 chữ cái thường (a–z)",        test: (v) => /[a-z]/.test(v || "") },
-  { label: "≥ 1 chữ cái HOA (A–Z)",           test: (v) => /[A-Z]/.test(v || "") },
-  { label: "≥ 1 chữ số (0–9)",                test: (v) => /\d/.test(v || "") },
-  { label: "≥ 1 ký tự đặc biệt (!@#$…)",      test: (v) => /[!@#$%^&*()_+\-={}\[\]|\\:;"'<>,.?/~`]/.test(v || "") },
+  { label: "≥ 1 ký tự",  test: (v) => (v || "").length >= 1 },
 ];
-function pwOk(v) { return PASSWORD_CHECKS.every(c => c.test(v)); }
+function pwOk(v) { return (v || "").length >= 1; }
 
 function PasswordChecks({ value, checks = PASSWORD_CHECKS }) {
   return (
@@ -36,7 +29,7 @@ function PasswordChecks({ value, checks = PASSWORD_CHECKS }) {
   );
 }
 
-function OrganizationScreen({ onOpenClass, onOpenPermissions }) {
+function OrganizationScreen({ onOpenClass, onOpenStudent }) {
   const D = window.MGT_DATA;
   const [tab, setTab] = React.useState("branches");
 
@@ -53,11 +46,11 @@ function OrganizationScreen({ onOpenClass, onOpenPermissions }) {
       ].filter(t => t.id !== "activity" || D.can("activity_log", "r"))}/>
 
       {tab === "branches" && <BranchesTab onOpenClass={onOpenClass}/>}
-      {tab === "accounts" && <AccountsTab onOpenPermissions={onOpenPermissions}/>}
+      {tab === "accounts" && <AccountsTab/>}
       {tab === "fees"     && <FeesTab/>}
       {tab === "promos"   && <PromosTab/>}
       {tab === "teachers" && <TeachersTab/>}
-      {tab === "vehicles" && <VehiclesTab/>}
+      {tab === "vehicles" && <VehiclesTab onOpenStudent={onOpenStudent}/>}
       {tab === "activity" && D.can("activity_log", "r") && <ActivityTab/>}
     </div>
   );
@@ -69,7 +62,16 @@ function BranchesTab({ onOpenClass }) {
   const [selectedId, setSelectedId] = React.useState(null);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editingId, setEditingId] = React.useState(null);
+  const [ctxMenu, setCtxMenu] = React.useState(null); // { id, x, y }
   const canCreate = D.can("branches", "create");
+  const canUpdate = D.can("branches", "update");
+
+  React.useEffect(() => {
+    if (!ctxMenu) return;
+    const h = () => setCtxMenu(null);
+    window.addEventListener("click", h);
+    return () => window.removeEventListener("click", h);
+  }, [!!ctxMenu]);
 
   const toggle = (id) => setSelectedId(prev => prev === id ? null : id);
   // Managers come from admin/staff accounts (any active account is eligible).
@@ -104,6 +106,23 @@ function BranchesTab({ onOpenClass }) {
         initialValues={editing || {}}
         fields={branchFields}
         onSave={(d) => window.MGT_DATA.api.updateBranch(editingId, d)}/>
+      {/* Right-click context menu for branch cards (admin only) */}
+      {ctxMenu && canUpdate && (
+        <div style={{
+          position: "fixed", top: ctxMenu.y, left: ctxMenu.x, zIndex: 100010,
+          background: "var(--glass-2)", border: "1px solid var(--glass-stroke)",
+          backdropFilter: "var(--glass-blur)", borderRadius: 10, padding: "4px 0",
+          boxShadow: "var(--shadow-2)", minWidth: 140,
+        }} onClick={(e) => e.stopPropagation()}>
+          <div onClick={() => { setEditingId(ctxMenu.id); setCtxMenu(null); }} style={{
+            padding: "8px 14px", cursor: "pointer", fontSize: 13,
+            fontFamily: "var(--font-ui)", color: "var(--fg-1)",
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            <Icon name="edit" size={14}/> Sửa
+          </div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16 }}>
         {D.branches.map(b => {
           // Use index maps — O(1) per branch instead of three full scans.
@@ -119,6 +138,7 @@ function BranchesTab({ onOpenClass }) {
           return (
             <GlassCard key={b.id} padding={22}
                        onClick={() => toggle(b.id)}
+                       onContextMenu={canUpdate ? (e) => { e.preventDefault(); setCtxMenu({ id: b.id, x: e.clientX, y: e.clientY }); } : undefined}
                        style={{
                          cursor: "pointer",
                          transition: "all 220ms var(--ease-out)",
@@ -143,10 +163,7 @@ function BranchesTab({ onOpenClass }) {
                     <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 20, fontWeight: 600, color: "var(--fg-1)", letterSpacing: "-0.02em" }}>{b.name}</h3>
                     <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)" }}>{b.address}</span>
                   </div>
-                  {/* Per spec: branches do not expose Sửa/Xóa actions.
-                      Creation stays available via the "Thêm chi nhánh"
-                      button above for setup, but lifecycle changes happen
-                      via Lịch sử audit + DB ops, not user UI. */}
+                  {/* Sửa available via right-click → context menu (admin only) */}
                 </div>
 
                 <Divider/>
@@ -306,7 +323,7 @@ function BranchExpanded({ branchId, onClose, onOpenClass }) {
   );
 }
 
-function AccountsTab({ onOpenPermissions }) {
+function AccountsTab() {
   const D = window.MGT_DATA;
   const [open, setOpen] = React.useState(false);
   const [editingId, setEditingId] = React.useState(null);
@@ -318,10 +335,22 @@ function AccountsTab({ onOpenPermissions }) {
   // EditRecordModal/RecordCreatorModal seed selects from options[0].id so
   // the first real branch is the default.
   const branchOpts = D.branches.map(b => ({ id: b.id, label: b.name }));
+  // Active classes only — collaborators are assigned to classes that are
+  // currently open / running (status derived in data-loader).
+  const activeClassOpts = D.classes
+    .filter(c => c.status === "đang mở" || c.status === "đang diễn ra")
+    .map(c => ({ value: c.id, label: c.code }));
   const accountCreateFields = [
     { id: "name",     label: "Họ tên",                  type: "text",   placeholder: "Nguyễn Văn A", fullWidth: true },
-    { id: "role",     label: "Vai trò",                 type: "select", options: [{ id: "staff", label: "Nhân viên" }, { id: "admin", label: "Admin" }] },
-    { id: "branchId", label: "Chi nhánh",               type: "select", options: branchOpts },
+    { id: "role",     label: "Vai trò",                 type: "select", options: [{ id: "staff", label: "Nhân viên" }, { id: "admin", label: "Admin" }, { id: "collaborator", label: "Cộng tác viên" }] },
+    { id: "branchId", label: "Chi nhánh",               type: "select", options: branchOpts,
+      showIf: v => v.role !== "collaborator" },
+    { id: "branchIds", label: "Chi nhánh được giao",    type: "tagselect",
+      options: D.branches.map(b => ({ value: b.id, label: b.name })),
+      showIf: v => v.role === "collaborator" },
+    { id: "classIds",  label: "Lớp được giao",          type: "tagselect",
+      options: activeClassOpts,
+      showIf: v => v.role === "collaborator" },
     { id: "email",    label: "Tên đăng nhập (Email)",   type: "text",   placeholder: "you@motogiathinh.vn" },
     { id: "phone",    label: "Số điện thoại",           type: "phone",  placeholder: "090 123 4567" },
     { id: "password", label: "Mật khẩu tạm thời",       type: "password", placeholder: "Mật khẩu mới",
@@ -379,8 +408,8 @@ function AccountsTab({ onOpenPermissions }) {
               <Avatar name={a.name} size={30}/>
               <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)" }}>{a.name}</span>
             </div>
-            <Chip color={a.role === "admin" ? "var(--neon-violet)" : "var(--fg-1)"}>
-              {a.role === "admin" ? "Admin" : "Nhân viên"}
+            <Chip color={a.role === "admin" ? "var(--neon-violet)" : a.role === "collaborator" ? "var(--neon-cyan)" : "var(--fg-1)"}>
+              {a.role === "admin" ? "Admin" : a.role === "collaborator" ? "Cộng tác viên" : "Nhân viên"}
             </Chip>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-2)" }}>{a.email}</span>
             <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-2)" }}>{b ? b.name : "—"}</span>
@@ -399,8 +428,6 @@ function AccountsTab({ onOpenPermissions }) {
                 onClick: () => window.MGT_DATA.api.updateAccount(a.id, { active: !a.active }).catch(e => reportWriteError(e, "Lỗi cập nhật")),
                 hidden: !canUpdate },
               { label: "Đặt lại mật khẩu", onClick: () => setPwId(a.id), hidden: !canUpdate },
-              { label: "Phân quyền", onClick: () => onOpenPermissions(a.id),
-                hidden: !canUpdate || a.role === "admin" },
               { label: "Xóa", onClick: () => setConfirmDeleteId(a.id),
                 hidden: !canUpdate || a.id === D.currentUserId, danger: true },
             ]}/>
@@ -606,204 +633,6 @@ function TeachersTab() {
   );
 }
 
-function VehiclesTab() {
-  const D = window.MGT_DATA;
-  const [createOpen, setCreateOpen] = React.useState(false);
-  const [rentOpen,   setRentOpen]   = React.useState(false);
-  const [editingId,  setEditingId]  = React.useState(null);
-  const [selectedId, setSelectedId] = React.useState(null);
-  const canCreate = D.can("vehicles", "create");
-  const canUpdate = D.can("vehicles", "update");
-  const branchOpts = D.branches.map(b => ({ id: b.id, label: b.name }));
-  const vehicleFields = [
-    { id: "name",     label: "Tên xe",       type: "text",   placeholder: "Honda Wave Alpha", fullWidth: true },
-    { id: "licence",  label: "Bằng",         type: "select", options: [{ id: "A", label: "A" }, { id: "A1", label: "A1" }] },
-    { id: "branchId", label: "Chi nhánh",    type: "select", options: branchOpts },
-    { id: "plate",    label: "Biển số",      type: "text",   placeholder: "59-K1 123.45" },
-    { id: "year",     label: "Năm sản xuất", type: "int",    placeholder: "2024" },
-    { id: "price",    label: "Giá thuê (đ/lượt)", type: "money", placeholder: "20,000", fullWidth: true },
-  ];
-  const editing = editingId ? D.vehicles.find(x => x.id === editingId) : null;
-  const toggle  = (id) => setSelectedId(s => s === id ? null : id);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.16em", textTransform: "uppercase" }}>
-          {D.vehicles.length} phương tiện · {D.rentals.length} lượt thuê đã ghi
-        </span>
-        {/* Admin sees both buttons; staff only sees "Ghi nhận lượt thuê".
-            Per spec: "Thêm phương tiện" sits LEFT of "Ghi nhận lượt thuê". */}
-        {canCreate && <Button variant="secondary" size="sm" icon="plus" onClick={() => setCreateOpen(true)}>Thêm phương tiện</Button>}
-        <Button variant="primary" size="sm" icon="card" onClick={() => setRentOpen(true)}>Ghi nhận lượt thuê</Button>
-      </div>
-
-      <RecordCreatorModal open={createOpen} onClose={() => setCreateOpen(false)}
-        title="Thêm phương tiện"
-        onCreate={(d) => window.MGT_DATA.api.createVehicle(d).catch(e => reportWriteError(e, "Lỗi tạo phương tiện"))}
-        fields={vehicleFields}/>
-      <EditRecordModal open={!!editing} onClose={() => setEditingId(null)}
-        title="Sửa phương tiện" subtitle={editing?.name}
-        initialValues={editing || {}} fields={vehicleFields}
-        onSave={(d) => window.MGT_DATA.api.updateVehicle(editingId, d)}/>
-      <RentVehicleModal open={rentOpen} onClose={() => setRentOpen(false)}
-        defaultVehicleId={selectedId || D.vehicles[0]?.id}/>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
-        {D.vehicles.map(v => {
-          const b = D.getBranch(v.branchId);
-          const isSelected = selectedId === v.id;
-          const rentals = D.rentalsForVehicle(v.id);
-          const tone = "var(--neon-cyan)";
-          return (
-            <GlassCard key={v.id} padding={22}
-                       onClick={() => toggle(v.id)}
-                       style={{
-                         cursor: "pointer",
-                         transition: "all 220ms var(--ease-out)",
-                         borderColor: isSelected ? tone : "var(--glass-stroke)",
-                         boxShadow: isSelected
-                           ? `0 0 0 1px ${tone}, 0 0 28px color-mix(in oklab, ${tone} 42%, transparent), var(--shadow-2)`
-                           : `0 0 18px color-mix(in oklab, ${tone} 14%, transparent), var(--shadow-2)`,
-                         background: `linear-gradient(135deg, color-mix(in oklab, ${tone} 9%, transparent), transparent 70%), var(--glass-2)`,
-                         transform: isSelected ? "translateY(-2px)" : "none",
-                       }}>
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                  <div style={{
-                    width: 44, height: 44, borderRadius: 12,
-                    background: `linear-gradient(135deg, ${tone}, color-mix(in oklab, ${tone} 55%, var(--ink-0)))`,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    boxShadow: `0 0 16px color-mix(in oklab, ${tone} 52%, transparent)`,
-                  }}>
-                    <Icon name="bike" size={20} color="var(--ink-0)"/>
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 600, color: "var(--fg-1)", letterSpacing: "-0.02em",
-                                 whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{v.name}</h3>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-3)", fontVariantNumeric: "tabular-nums" }}>{v.plate || "—"} · {v.year || "—"}</span>
-                  </div>
-                </div>
-
-                <Divider/>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}>
-                  <MicroStat label="Bằng" value={v.licence || "—"}/>
-                  <MicroStat label="Giá"  value={v.price ? window.fmtVND(v.price) : "—"} mono color="var(--neon-lime)"/>
-                  <MicroStat label="Lượt thuê" value={rentals.length} mono/>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "center", gap: 8, paddingTop: 4 }}>
-                  <span style={{ flex: 1, fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)" }}>{b ? b.name : "—"}</span>
-                  {canUpdate && (
-                    <span onClick={(e) => { e.stopPropagation(); setEditingId(v.id); }}
-                          style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase",
-                                   color: "var(--fg-3)", cursor: "pointer", padding: "4px 8px", borderRadius: 8,
-                                   border: "1px solid var(--glass-stroke)" }}>Sửa</span>
-                  )}
-                </div>
-              </div>
-            </GlassCard>
-          );
-        })}
-      </div>
-
-      {selectedId && <VehicleExpanded vehicleId={selectedId}/>}
-    </div>
-  );
-}
-
-// --------------------------------------------------------------------
-// VehicleExpanded — appears under the vehicle grid when a card is open.
-// Pattern follows BranchExpanded: a single roll-down panel with detail
-// metadata + a table of rental payments for the selected vehicle. The
-// top-right hosts a Sort menu (no Đóng button — re-click the same card
-// to collapse) per user spec.
-// --------------------------------------------------------------------
-function VehicleExpanded({ vehicleId }) {
-  const D = window.MGT_DATA;
-  const v = D.getVehicle(vehicleId);
-  const b = D.getBranch(v?.branchId);
-  const rentals = D.rentalsForVehicle(vehicleId);
-  const tone = "var(--neon-cyan)";
-  const sortOpts = [
-    { id: "createdAtMs:desc", label: "Mới → Cũ" },
-    { id: "createdAtMs:asc",  label: "Cũ → Mới" },
-    { id: "amount:desc",      label: "Số tiền ↓" },
-    { id: "amount:asc",       label: "Số tiền ↑" },
-    { id: "rentalRounds:desc",label: "Số lượt ↓" },
-    { id: "rentalRounds:asc", label: "Số lượt ↑" },
-  ];
-  const [sortKey, setSortKey] = React.useState("createdAtMs:desc");
-  const [field, dir] = sortKey.split(":");
-  const sorted = [...rentals].sort((a, c) => {
-    const av = a[field] || 0, cv = c[field] || 0;
-    return dir === "asc" ? av - cv : cv - av;
-  });
-  const totalAmount = rentals.reduce((s, r) => s + r.amount, 0);
-  const totalRounds = rentals.reduce((s, r) => s + (r.rentalRounds || 0), 0);
-  if (!v) return null;
-  return (
-    <div key={vehicleId} style={{ animation: "mgt-roll-down 280ms var(--ease-out)" }}>
-      <style>{`@keyframes mgt-roll-down { from { opacity: 0; transform: translateY(-8px) scaleY(0.96); transform-origin: top; max-height: 0; } to { opacity: 1; transform: translateY(0) scaleY(1); max-height: 2000px; } }`}</style>
-      <GlassCard padding={26}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <div style={{ width: 8, height: 28, borderRadius: 2, background: tone,
-                          boxShadow: `0 0 12px color-mix(in oklab, ${tone} 60%, transparent)` }}/>
-            <div style={{ flex: 1 }}>
-              <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 22, fontWeight: 600, color: "var(--fg-1)", letterSpacing: "-0.02em" }}>{v.name}</h3>
-              <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--fg-3)" }}>
-                {v.licence || "—"} · {v.plate || "—"} · {v.year || "—"} · {b ? b.name : "—"} · Giá {v.price ? window.fmtVND(v.price) : "chưa đặt"}
-              </span>
-            </div>
-            <SortMenu value={sortKey} onChange={setSortKey} options={sortOpts}/>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-            <MicroStat label="Số lượt thuê" value={rentals.length} mono/>
-            <MicroStat label="Tổng số lượt"  value={totalRounds} mono/>
-            <MicroStat label="Tổng thu"       value={window.fmtVND(totalAmount)} mono color="var(--neon-lime)"/>
-          </div>
-
-          <div>
-            <div style={{
-              display: "grid", gridTemplateColumns: "150px 1fr 80px 120px 1fr",
-              padding: "10px 14px", gap: 12, borderBottom: "1px solid var(--ink-4)",
-              fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--fg-3)",
-            }}>
-              <span>Thời điểm</span><span>Học viên</span><span style={{ textAlign: "right" }}>Lượt</span>
-              <span style={{ textAlign: "right" }}>Số tiền</span><span>Nhân viên</span>
-            </div>
-            <div style={{ maxHeight: 320, overflowY: "auto" }}>
-              {sorted.length === 0 && (
-                <div style={{ padding: "20px 14px", color: "var(--fg-4)", fontFamily: "var(--font-ui)", fontSize: 13, fontStyle: "italic", textAlign: "center" }}>
-                  Chưa có lượt thuê nào cho xe này.
-                </div>
-              )}
-              {sorted.map((r, i) => {
-                const stu = D.getStudent(r.studentId);
-                const staff = D.getStaff(r.staffId);
-                return (
-                  <div key={r.id} style={{
-                    display: "grid", gridTemplateColumns: "150px 1fr 80px 120px 1fr",
-                    padding: "12px 14px", gap: 12, alignItems: "center",
-                    borderBottom: i < sorted.length - 1 ? "1px solid var(--ink-4)" : "none",
-                  }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-2)", fontVariantNumeric: "tabular-nums" }}>{r.createdAt}</span>
-                    <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--fg-1)" }}>{stu?.name || r.studentId}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)", fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{r.rentalRounds || 0}</span>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 13, fontWeight: 600, color: "var(--neon-lime)", fontVariantNumeric: "tabular-nums", textAlign: "right" }}>{window.fmtVND(r.amount)}</span>
-                    <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)" }}>{staff?.name || "—"}</span>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </GlassCard>
-    </div>
-  );
-}
 
 // --------------------------------------------------------------------
 // SortMenu — small dropdown atom used in expanded detail cards. Single-
@@ -858,146 +687,6 @@ function SortMenu({ value, onChange, options }) {
   );
 }
 
-// --------------------------------------------------------------------
-// RentVehicleModal — "Ghi nhận lượt thuê" entry point. Picks a vehicle,
-// a student (search across name / maHV / phone), and a round count.
-// Amount is locked to vehicle.price × rounds — server validates the same
-// (cashier can't override). Submits via createRental.
-// --------------------------------------------------------------------
-function RentVehicleModal({ open, onClose, defaultVehicleId }) {
-  const D = window.MGT_DATA;
-  const [vehicleId, setVehicleId] = React.useState(defaultVehicleId || D.vehicles[0]?.id || "");
-  const [studentQ,  setStudentQ]  = React.useState("");
-  const [studentId, setStudentId] = React.useState("");
-  const [rounds,    setRounds]    = React.useState("1");
-  const [method,    setMethod]    = React.useState("Tiền mặt");
-  const [busy, setBusy] = React.useState(false);
-  const [err,  setErr]  = React.useState(null);
-  const busyRef = React.useRef(false);
-  React.useEffect(() => {
-    if (!open) return;
-    setVehicleId(defaultVehicleId || D.vehicles[0]?.id || "");
-    setStudentQ(""); setStudentId(""); setRounds("1");
-    setMethod("Tiền mặt"); setBusy(false); setErr(null); busyRef.current = false;
-  }, [open, defaultVehicleId]);  // eslint-disable-line
-
-  const veh = D.getVehicle(vehicleId);
-  const r = parseInt(rounds, 10) || 0;
-  const total = veh && veh.price > 0 && r > 0 ? veh.price * r : 0;
-  // Student search — prefix-match by name / maHV / phone, cap at 8 matches.
-  const matches = React.useMemo(() => {
-    const q = studentQ.trim().toLowerCase();
-    if (!q || studentId) return [];
-    return D.students.filter(s =>
-      (s.name || "").toLowerCase().includes(q)
-      || (s.maHV || "").toLowerCase().includes(q)
-      || (s.phone || "").includes(q)
-    ).slice(0, 8);
-  }, [studentQ, studentId]);
-  const chosenStudent = studentId ? D.getStudent(studentId) : null;
-
-  const canSubmit = !busy && veh && veh.price > 0 && r >= 1 && studentId;
-  const submit = async () => {
-    if (busyRef.current || !canSubmit) return;
-    busyRef.current = true;
-    try {
-      setBusy(true); setErr(null);
-      await D.api.createRental({ studentId, vehicleId, rounds: r, method });
-      onClose();
-    } catch (e) {
-      setErr(e?.message || String(e));
-    } finally {
-      busyRef.current = false; setBusy(false);
-    }
-  };
-
-  const vehicleOpts = D.vehicles.map(v => ({ value: v.id, label: `${v.name} · ${v.plate || "—"}${v.price ? ` · ${window.fmtVND(v.price)}/lượt` : " · chưa đặt giá"}` }));
-  return (
-    <Modal open={open} onClose={onClose} width={560}
-           title="Ghi nhận lượt thuê xe"
-           subtitle="Pay-on-the-spot · không tính vào doanh thu chính"
-           primaryAction={submit}
-           primaryLabel={busy ? "Đang ghi…" : "Ghi nhận"}
-           primaryIcon="check"
-           primaryDisabled={!canSubmit}
-           footerStart={err ? (
-             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>Lỗi: {err}</span>
-           ) : null}>
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <Select label="Phương tiện" value={vehicleId} onChange={setVehicleId} options={vehicleOpts}/>
-        {/* Student picker — controlled-search input. Once a match is
-            picked the chip replaces the input until "Đổi" clicked. */}
-        <div>
-          <label style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--fg-3)", display: "block", marginBottom: 6 }}>Học viên</label>
-          {chosenStudent ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
-                          background: "var(--ink-2)", border: "1px solid var(--glass-stroke)", borderRadius: 10 }}>
-              <Avatar name={chosenStudent.name} size={28}/>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)" }}>{chosenStudent.name}</div>
-                <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--fg-3)" }}>{chosenStudent.maHV} · {chosenStudent.phone || "—"}</div>
-              </div>
-              <button type="button" onClick={() => { setStudentId(""); setStudentQ(""); }}
-                      style={{ background: "transparent", border: "1px solid var(--glass-stroke)", color: "var(--fg-3)",
-                               padding: "4px 10px", borderRadius: 8, cursor: "pointer",
-                               fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.12em", textTransform: "uppercase" }}>Đổi</button>
-            </div>
-          ) : (
-            <div style={{ position: "relative" }}>
-              <Input value={studentQ} onChange={setStudentQ} placeholder="Tìm theo tên / mã HV / SĐT…"/>
-              {matches.length > 0 && (
-                <div style={{ position: "absolute", left: 0, right: 0, top: "100%", marginTop: 4, zIndex: 30,
-                              padding: 4, borderRadius: 10,
-                              background: "var(--glass-3)", border: "1px solid var(--glass-stroke-strong)", boxShadow: "var(--shadow-2)",
-                              maxHeight: 240, overflowY: "auto" }}>
-                  {matches.map(s => (
-                    <div key={s.id} onClick={() => { setStudentId(s.id); setStudentQ(s.name); }}
-                         style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px",
-                                  borderRadius: 8, cursor: "pointer", fontFamily: "var(--font-ui)", fontSize: 13 }}
-                         onMouseEnter={(e) => e.currentTarget.style.background = "var(--glass-2)"}
-                         onMouseLeave={(e) => e.currentTarget.style.background = "transparent"}>
-                      <Avatar name={s.name} size={24}/>
-                      <div style={{ flex: 1 }}>
-                        <div style={{ color: "var(--fg-1)", fontWeight: 600 }}>{s.name}</div>
-                        <div style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)" }}>{s.maHV} · {s.phone || "—"}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Input label="Số lượt" value={rounds} onChange={setRounds} digits maxDigits={3} mono placeholder="1"/>
-          <Select label="Hình thức" value={method} onChange={setMethod}
-                  options={[{ value: "Tiền mặt", label: "Tiền mặt" }, { value: "Chuyển khoản", label: "Chuyển khoản" }]}/>
-        </div>
-
-        {/* Live total — read-only, server computes the same. */}
-        <div style={{
-          padding: "12px 14px", borderRadius: 12,
-          background: "color-mix(in oklab, var(--neon-lime) 10%, transparent)",
-          border: "1px solid color-mix(in oklab, var(--neon-lime) 28%, transparent)",
-          display: "flex", justifyContent: "space-between", alignItems: "center",
-        }}>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--fg-3)" }}>
-            {veh && veh.price > 0 ? `${r || 0} lượt × ${window.fmtVND(veh.price)}` : "Chưa đủ thông tin"}
-          </span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 22, fontWeight: 700, color: "var(--neon-lime)", fontVariantNumeric: "tabular-nums" }}>
-            {window.fmtVND(total)}
-          </span>
-        </div>
-        {veh && (!veh.price || veh.price <= 0) && (
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-amber)" }}>
-            ⚠ Phương tiện này chưa đặt giá thuê. Admin cần đặt giá trước khi cho thuê.
-          </span>
-        )}
-      </div>
-    </Modal>
-  );
-}
 
 // Vietnamese labels for action codes. Anything missing falls back to a
 // generated label from classifyAction's verb (e.g., "Tạo mới").
@@ -1022,7 +711,6 @@ const ACTION_LABEL_VI = {
   "accounts.update":       "Cập nhật tài khoản",
   "accounts.delete":       "Xóa tài khoản",
   "accounts.reset_password":      "Đặt lại mật khẩu",
-  "accounts.permissions.update":  "Đổi phân quyền",
   "teachers.update":       "Cập nhật giáo viên",
   "vehicles.create":       "Thêm phương tiện",
   "vehicles.update":       "Cập nhật phương tiện",
@@ -1166,7 +854,7 @@ function ActivityTab() {
               }} title={log.action}>{actionLabelVi(log.action, verbLabel)}</span>
               <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--fg-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{humanizeTarget(log)}</span>
             </div>
-            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", textAlign: "right" }}>{user.role === "admin" ? "Admin" : user.role === "system" ? "Hệ thống" : "Nhân viên"}</span>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", textAlign: "right" }}>{user.role === "admin" ? "Admin" : user.role === "system" ? "Hệ thống" : user.role === "collaborator" ? "Cộng tác viên" : "Nhân viên"}</span>
           </div>
         );
       })}
@@ -1256,6 +944,24 @@ function MoreMenu({ items, stopPropagation = true }) {
 }
 
 // --------------------------------------------------------------------
+// Field-driven form helpers (shared by RecordCreatorModal/EditRecordModal).
+//   fieldVisible — a field with `showIf(values) === false` is hidden.
+//   stripHidden  — drop hidden fields' ids from the submitted payload so
+//                  conditional values (e.g. branchId on a collaborator)
+//                  never leak to the backend.
+// --------------------------------------------------------------------
+function fieldVisible(f, values) {
+  return typeof f.showIf === "function" ? !!f.showIf(values) : true;
+}
+function stripHidden(draft, fields) {
+  const out = { ...draft };
+  for (const f of fields || []) {
+    if (!fieldVisible(f, draft)) delete out[f.id];
+  }
+  return out;
+}
+
+// --------------------------------------------------------------------
 // EditRecordModal — slim wrapper around the RecordCreatorModal field
 // renderer, but seeded from `initialValues` and emitting onSave(patch).
 // Used by every "Sửa" action across the Tổ chức tabs.
@@ -1268,6 +974,7 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
       seed[f.id] = v != null ? v
                  : f.type === "select"   ? (f.options?.[0]?.id ?? "")
                  : f.type === "multipill" ? []
+                 : f.type === "tagselect" ? []
                  : "";
     }
     return seed;
@@ -1290,7 +997,7 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
     busyRef.current = true;
     try {
       setBusy(true); setErr(null);
-      await onSave?.(draft);
+      await onSave?.(stripHidden(draft, fields));
       onClose();
     } catch (e) {
       setErr(e?.message || String(e));
@@ -1320,8 +1027,8 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
           flexDirection: useGrid ? undefined : "column",
           gap: 12,
         }}>
-          {(fields || []).map((f) => {
-            const span = f.fullWidth || f.type === "multipill" ? 2 : 1;
+          {(fields || []).filter(f => fieldVisible(f, draft)).map((f) => {
+            const span = f.fullWidth || f.type === "multipill" || f.type === "tagselect" ? 2 : 1;
             const node = f.type === "select"
               ? <Select label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)}
@@ -1332,6 +1039,12 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
                                        options={f.options}
                                        onChange={(v) => set(f.id, v)}
                                        color={f.color || "cyan"}/>
+              : f.type === "tagselect"
+              ? <TagSelect label={f.label} value={draft[f.id]}
+                           options={f.options}
+                           onChange={(v) => set(f.id, v)}
+                           placeholder={f.placeholder || "Thêm…"}
+                           color={f.color || "cyan"}/>
               : <Input  label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)} placeholder={f.placeholder}
                         type={f.type === "password" ? "password" : "text"}
@@ -1453,7 +1166,7 @@ function reportWriteError(e, fallback = "Lỗi") {
   else if (/cannot_delete_last_admin/i.test(msg)) friendly = "Không thể xoá: đây là quản trị viên duy nhất còn lại.";
   else if (/branch_in_use/.test(msg)) friendly = "Không thể xóa: chi nhánh đang có lớp, học viên hoặc nhân viên.";
   else if (/in_use|in use|FK|FOREIGN/i.test(msg)) friendly = "Không thể xóa: bản ghi đang được tham chiếu.";
-  else if (/password_(too_short|too|weak|needs_)/.test(msg)) friendly = "Mật khẩu chưa đạt yêu cầu (≥ 8 ký tự · chữ thường · chữ HOA · số · ký tự đặc biệt).";
+  else if (/password_(too_short|too|weak|needs_)/.test(msg)) friendly = "Mật khẩu không hợp lệ.";
   else if (/forbidden|admin_only|requireAdmin/i.test(msg)) friendly = "Chỉ admin mới thực hiện được thao tác này.";
   else friendly = fallback + ": " + msg;
   if (window.MGT_TOAST) window.MGT_TOAST(friendly);
@@ -1462,7 +1175,7 @@ function reportWriteError(e, fallback = "Lỗi") {
 
 Object.assign(window, {
   OrganizationScreen, BranchesTab, AccountsTab, FeesTab, PromosTab,
-  TeachersTab, VehiclesTab, ActivityTab, RecordCreatorModal,
+  TeachersTab, ActivityTab, RecordCreatorModal,
   MoreMenu, EditRecordModal, PasswordResetModal, ConfirmDialog,
 });
 
@@ -1480,6 +1193,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
     for (const f of fields || []) {
       seed[f.id] = f.type === "select"   ? (f.options?.[0]?.id ?? "")
                 : f.type === "multipill" ? []
+                : f.type === "tagselect" ? []
                 : "";
     }
     return seed;
@@ -1499,7 +1213,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
     busyRef.current = true;
     try {
       setBusy(true); setErr(null);
-      await onCreate?.(draft);
+      await onCreate?.(stripHidden(draft, fields));
       onClose();
     } catch (e) {
       setErr(e?.message || String(e));
@@ -1534,9 +1248,9 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
           flexDirection: useGrid ? undefined : "column",
           gap: 12,
         }}>
-          {(fields || []).map((f) => {
-            // multipill rows always span the full width — pills wrap naturally.
-            const span = f.fullWidth || f.type === "multipill" ? 2 : 1;
+          {(fields || []).filter(f => fieldVisible(f, draft)).map((f) => {
+            // multipill / tagselect rows always span the full width — pills wrap naturally.
+            const span = f.fullWidth || f.type === "multipill" || f.type === "tagselect" ? 2 : 1;
             const node = f.type === "select"
               ? <Select label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)}
@@ -1547,6 +1261,12 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
                                        options={f.options}
                                        onChange={(v) => set(f.id, v)}
                                        color={f.color || "cyan"}/>
+              : f.type === "tagselect"
+              ? <TagSelect label={f.label} value={draft[f.id]}
+                           options={f.options}
+                           onChange={(v) => set(f.id, v)}
+                           placeholder={f.placeholder || "Thêm…"}
+                           color={f.color || "cyan"}/>
               : <Input  label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)} placeholder={f.placeholder}
                         type={f.type === "password" ? "password" : "text"}

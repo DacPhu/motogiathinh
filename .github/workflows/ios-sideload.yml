@@ -1,0 +1,92 @@
+name: Build iOS unsigned IPA (sideload)
+
+# Builds an UNSIGNED, real-device .ipa of the Capacitor CTV app for sideloading
+# with AltStore / Sideloadly using a FREE Apple ID — NO paid Apple Developer
+# account, NO signing secrets. The sideload tool re-signs the .ipa on install,
+# so CI ships it unsigned. (Apps signed with a free Apple ID expire after 7 days
+# and must be re-signed; AltStore can auto-refresh them.)
+#
+# This is the "test on your own device while you wait for the Developer Program"
+# path. For SIGNED ad-hoc / TestFlight distribution see ios-distribute.yml.
+#
+# Native ios/ is gitignored and regenerated here via `cap add`. Manual-only to
+# keep macOS runner minutes down — run it when you want a fresh build.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sideload:
+    name: iOS (unsigned device IPA)
+    runs-on: macos-14
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install deps + build web bundle
+        run: |
+          npm install
+          npm run build
+
+      - name: Add + sync iOS + patch Info.plist
+        run: |
+          npx cap add ios
+          npx cap sync ios
+          node patch-native.mjs
+
+      - name: Generate app icons
+        run: npx capacitor-assets generate --ios
+
+      - name: pod install
+        working-directory: mobile/ios/App
+        run: pod install
+
+      - name: Build unsigned (device, no code signing)
+        working-directory: mobile/ios/App
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package .app into an unsigned .ipa
+        working-directory: mobile/ios/App
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(build/Build/Products/Release-iphoneos/*.app)
+          if [ ${#apps[@]} -eq 0 ]; then echo "::error::build produced no .app"; exit 1; fi
+          rm -rf Payload "$RUNNER_TEMP/MotoGiaThinhCTV-unsigned.ipa"
+          mkdir Payload
+          cp -R "${apps[0]}" Payload/
+          # -y preserves the symlinks inside the .app bundle (frameworks) — required
+          # for a valid, re-signable .ipa.
+          zip -qry "$RUNNER_TEMP/MotoGiaThinhCTV-unsigned.ipa" Payload
+          ls -la "$RUNNER_TEMP"/*.ipa
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: motogiathinh-ctv-ios-unsigned-ipa
+          path: ${{ runner.temp }}/MotoGiaThinhCTV-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30

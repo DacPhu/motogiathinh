@@ -255,7 +255,7 @@ function PaymentsScreen({ onOpenStudent, onAddPayment }) {
               </div>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--fg-1)", fontWeight: 600, letterSpacing: "0.04em" }}>{r.p.id}</span>
               <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                <Avatar name={r.s.name} size={28}/>
+                <Avatar name={r.s.name} size={28} src={r.s.docs_the3x4_url || null}/>
                 <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
                   <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-1)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.s.name}</span>
                   <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", fontVariantNumeric: "tabular-nums" }}>{r.s.maHV}</span>
@@ -331,7 +331,7 @@ function PaymentDetailCard({ row, isClosing, onOpenStudent }) {
       }}>
         {/* Header: student + amount */}
         <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-          <Avatar name={s.name} size={48}/>
+          <Avatar name={s.name} size={48} src={s.docs_the3x4_url || null}/>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--fg-3)" }}>Học viên</span>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
@@ -609,7 +609,7 @@ function PaymentDetail({ paymentId, onBack, onOpenStudent }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <GlassCard padding={26}>
         <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-          <Avatar name={s.name} size={64} glow/>
+          <Avatar name={s.name} size={64} glow src={s.docs_the3x4_url || null}/>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--fg-3)" }}>Học viên</span>
             <h2 onClick={() => onOpenStudent(s.id)} style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 28, fontWeight: 600, color: "var(--fg-1)", letterSpacing: "-0.025em", cursor: "pointer" }}>{s.name} <span style={{ fontFamily: "var(--font-mono)", fontSize: 14, color: "var(--fg-3)" }}>{s.maHV}</span></h2>

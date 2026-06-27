@@ -7,6 +7,7 @@ from app.config import settings
 from app.routers import (
     accounts,
     activity_log,
+    address,
     auth,
     branches,
     classes,
@@ -19,6 +20,7 @@ from app.routers import (
     payments,
     promotions,
     reports,
+    student_docs,
     students,
     teachers,
     vehicles,
@@ -56,6 +58,7 @@ API_PREFIX = "/api"
 app.include_router(auth.router, prefix=API_PREFIX)
 app.include_router(me.router, prefix=API_PREFIX)
 # Boot entities (frontend fetches these 11 in parallel + /constants/profile-docs)
+app.include_router(address.router, prefix=API_PREFIX)
 app.include_router(branches.router, prefix=API_PREFIX)
 app.include_router(accounts.router, prefix=API_PREFIX)
 app.include_router(fee_plans.router, prefix=API_PREFIX)
@@ -64,6 +67,7 @@ app.include_router(teachers.router, prefix=API_PREFIX)
 app.include_router(vehicles.router, prefix=API_PREFIX)
 app.include_router(classes.router, prefix=API_PREFIX)
 app.include_router(students.router, prefix=API_PREFIX)
+app.include_router(student_docs.router, prefix=API_PREFIX)
 app.include_router(payments.router, prefix=API_PREFIX)
 app.include_router(notifications.router, prefix=API_PREFIX)
 app.include_router(activity_log.router, prefix=API_PREFIX)

@@ -96,3 +96,16 @@ build/
 *.crt
 *.p12
 secrets/
+
+# ============================================================
+# Capacitor (mobile) — generated/build (source kept: src/, build.mjs, configs)
+# ============================================================
+mobile/www/
+mobile/android/
+mobile/ios/
+mobile/dist/
+
+# ============================================================
+# Dev-only preview / test artifacts (regenerable; not part of the app)
+# ============================================================
+frontend/_*

@@ -1,0 +1,32 @@
+{
+  "name": "motogiathinh-ctv-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Moto Gia Thịnh — CTV portal, native (Capacitor) wrapper of the web CTV portal.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "patch-native": "node patch-native.mjs",
+    "sync": "node build.mjs && cap sync && node patch-native.mjs",
+    "android": "node build.mjs && cap sync android && cap open android",
+    "ios": "node build.mjs && cap sync ios && node patch-native.mjs && cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/app": "^6.0.2",
+    "@capacitor/camera": "^6.1.2",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/ios": "^6.2.0",
+    "@capacitor/preferences": "^6.0.3",
+    "@capacitor/splash-screen": "^6.0.3",
+    "@capacitor/status-bar": "^6.0.2",
+    "@capacitor-mlkit/barcode-scanning": "^6.2.0",
+    "mgt-qr-scanner": "file:plugins/qr-scanner"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-react": "^7.26.3",
+    "@capacitor/assets": "^3.0.5",
+    "@capacitor/cli": "^6.2.0"
+  }
+}

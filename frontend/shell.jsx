@@ -16,6 +16,8 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
   const user = D.currentUser;
   const branch = D.getBranch(user.branchId);
   const [logoutOpen, setLogoutOpen] = React.useState(false);
+  const [downloadOpen, setDownloadOpen] = React.useState(false);
+  const [copiedLink, setCopiedLink] = React.useState(null);
   return (
     // Wrapper reserves layout space; the aside inside transforms independently
     // so it looks like a card being pulled out of (or pushed back into) a deck
@@ -50,7 +52,7 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
       }}>
       {/* Logo */}
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "4px 6px 12px", borderBottom: "1px solid var(--glass-stroke)" }}>
-        <img src="assets/logo-mark.svg" alt="" style={{ width: 32, height: 32 }}/>
+        <img src="assets/logo.png" alt="" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "contain" }}/>
         <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
           <span style={{ fontFamily: "var(--font-display)", fontWeight: 700, fontSize: 13, color: "var(--fg-1)", letterSpacing: "-0.01em" }}>CENTERSAI.com</span>
         </div>
@@ -58,7 +60,12 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
 
       {/* Nav */}
       <nav style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        {NAV_ITEMS.filter(it => it.id !== "dashboard" || window.MGT_DATA.can("dashboard", "r")).map(it => {
+        {NAV_ITEMS.filter(it => {
+          // Collaborators (CTV) get a restricted web app: only "Học viên"
+          // (view their students + add profiles). Staff/admin unchanged.
+          if (window.MGT_DATA.currentUser.role === "collaborator") return it.id === "students";
+          return it.id !== "dashboard" || window.MGT_DATA.can("dashboard", "r");
+        }).map(it => {
           const isActive = active === it.id;
           const showBadge = it.id === "notifications" && unreadCount > 0;
           return (
@@ -92,6 +99,23 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
 
       <div style={{ flex: 1 }}></div>
 
+      {/* Download pill — sits above the vehicle-mode toggle, right-aligned */}
+      <div style={{ display: "flex", padding: "0 4px", gap: 8 }}>
+        <div style={{ flex: 1 }}/>
+        <button onClick={() => setDownloadOpen(true)} title="Tải ứng dụng"
+          style={{
+            flex: 1, height: 32, padding: 3, border: "none",
+            cursor: "pointer", borderRadius: 999, background: "var(--glass-2)",
+            border: "1px solid var(--glass-stroke-strong)",
+            backdropFilter: "var(--glass-blur-soft)", WebkitBackdropFilter: "var(--glass-blur-soft)",
+            boxShadow: "0 1px 0 rgba(255,255,255,0.04) inset",
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            transition: "background 220ms var(--ease-out)", overflow: "hidden",
+          }}>
+          <Icon name="smartphone" size={14} color="var(--fg-3)"/>
+        </button>
+      </div>
+
       {/* Theme toggle + vehicle-mode toggle — fill the nav-card width */}
       <div style={{ display: "flex", padding: "0 4px", gap: 8 }}>
         <ThemeToggle/>
@@ -110,10 +134,43 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
         <Avatar name={user.name} size={32} />
         <div style={{ display: "flex", flexDirection: "column", flex: 1, minWidth: 0 }}>
           <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600, color: "var(--fg-1)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{user.name}</span>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--fg-3)" }}>{user.role === "admin" ? "Admin" : "Nhân viên"} · {branch.name}</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, letterSpacing: "0.12em", textTransform: "uppercase", color: "var(--fg-3)" }}>{user.role === "admin" ? "Admin" : user.role === "collaborator" ? "Cộng tác viên" : "Nhân viên"}{branch ? " · " + branch.name : ""}</span>
         </div>
       </button>
       </aside>
+
+      <Modal open={downloadOpen} onClose={() => { setDownloadOpen(false); setCopiedLink(null); }}
+             title="Tải ứng dụng" width={380} footer={null}>
+        <div style={{ display: "flex", gap: 10, paddingBottom: 4 }}>
+          {[
+            { key: "ios",     label: "iOS",     color: "var(--neon-cyan)", url: "https://motogiathinh.centersai.com/downloads/MotoGiaThinhCTV-unsigned.ipa" },
+            { key: "android", label: "Android", color: "var(--neon-lime)", url: "https://motogiathinh.centersai.com/downloads/app-debug.apk" },
+          ].map(({ key, label, color, url }) => {
+            const copied = copiedLink === key;
+            return (
+              <button key={key} onClick={() => {
+                navigator.clipboard.writeText(url).then(() => {
+                  setCopiedLink(key);
+                  setTimeout(() => setCopiedLink(null), 3000);
+                });
+              }} style={{
+                flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                gap: 8, padding: "18px 12px", borderRadius: 16, cursor: "pointer",
+                background: copied
+                  ? "color-mix(in oklab, var(--neon-lime) 12%, transparent)"
+                  : `color-mix(in oklab, ${color} 10%, transparent)`,
+                border: `1px solid ${copied ? "color-mix(in oklab, var(--neon-lime) 40%, transparent)" : `color-mix(in oklab, ${color} 30%, transparent)`}`,
+                transition: "all 200ms var(--ease-out)",
+              }}>
+                <Icon name={copied ? "check" : "smartphone"} size={20} color={copied ? "var(--neon-lime)" : color}/>
+                <div style={{ fontFamily: "var(--font-ui)", fontSize: 11, fontWeight: 600, color: copied ? "var(--neon-lime)" : "var(--fg-1)", textAlign: "center", lineHeight: 1.35 }}>
+                  {copied ? "Đã copy link tải điện thoại" : label}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </Modal>
 
       <Modal open={logoutOpen} onClose={() => setLogoutOpen(false)}
              title="Đăng xuất khỏi tài khoản?"
@@ -386,7 +443,7 @@ function CarGlyph({ size = 14 }) {
 // sticky wrapper, a fixed-positioned floating panel, etc). This keeps
 // the layering system simple: modals are always at the top, period.
 // --------------------------------------------------------------------
-function Modal({ open, onClose, title, subtitle, children, primaryAction, primaryLabel = "Lưu", primaryIcon = "check", width = 560, primaryDisabled, secondary, footerStart }) {
+function Modal({ open, onClose, title, subtitle, children, primaryAction, primaryLabel = "Lưu", primaryIcon = "check", width = 560, primaryDisabled, secondary, footerStart, footer }) {
   // Esc-to-dismiss: only attach while open. Inputs/textareas/selects
   // don't natively consume Escape in HTML (it's not a typing key), so
   // we close unconditionally — matches OS-level dialog behaviour.
@@ -425,11 +482,15 @@ function Modal({ open, onClose, title, subtitle, children, primaryAction, primar
           </div>
         )}
         {children}
-        <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>{footerStart || null}</div>
-          {secondary !== undefined ? secondary : <Button variant="ghost" onClick={onClose}>Hủy</Button>}
-          <Button variant="primary" onClick={primaryAction} icon={primaryIcon} disabled={primaryDisabled}>{primaryLabel}</Button>
-        </div>
+        {footer !== undefined ? (
+          <div style={{ paddingTop: 4 }}>{footer}</div>
+        ) : (
+          <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>{footerStart || null}</div>
+            {secondary !== undefined ? secondary : <Button variant="ghost" onClick={onClose}>Hủy</Button>}
+            <Button variant="primary" onClick={primaryAction} icon={primaryIcon} disabled={primaryDisabled}>{primaryLabel}</Button>
+          </div>
+        )}
       </div>
     </div>
   );

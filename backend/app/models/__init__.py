@@ -11,6 +11,7 @@ from app.models.session_model import Attendance, Session, SessionLog
 from app.models.student import DocumentType, Student, StudentContact, StudentDocument, StudentHealthCheck
 from app.models.promotion import Promotion
 from app.models.user import AuthToken, User
+from app.models.user_assignment import UserBranchAssignment, UserClassAssignment
 from app.models.user_permission import UserPermission
 from app.models.vehicle import Vehicle, VehicleMaintenance
 
@@ -18,6 +19,8 @@ __all__ = [
     "Branch",
     "User",
     "AuthToken",
+    "UserBranchAssignment",
+    "UserClassAssignment",
     "UserPermission",
     "Student",
     "StudentContact",

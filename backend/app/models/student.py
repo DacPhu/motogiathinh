@@ -82,6 +82,10 @@ class Student(BaseModel):
     profile_complete: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     docs_gksk_url: Mapped[str | None] = mapped_column(String(500))
     docs_don_de_nghi_url: Mapped[str | None] = mapped_column(String(500))
+    docs_cccd_qr_url: Mapped[str | None] = mapped_column(String(500))
+    docs_cccd_back_url: Mapped[str | None] = mapped_column(String(500))  # guest-branch CCCD-back slot
+    docs_bang_lai_front_url: Mapped[str | None] = mapped_column(String(500))
+    docs_bang_lai_back_url: Mapped[str | None] = mapped_column(String(500))
 
     # Relationships
     branch: Mapped["Branch"] = relationship("Branch", back_populates="students")

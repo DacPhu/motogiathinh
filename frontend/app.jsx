@@ -46,9 +46,13 @@ class ScreenErrorBoundary extends React.Component {
 function App() {
   // ThemeProvider wraps the whole app so theme toggles instantly
   // propagate to any component reading `useTheme()` / `useBranchTones()`.
+  // Collaborators (CTV) and guests (kiosk operators) get the standalone
+  // vertical portal (GuestApp) instead of the admin shell entirely.
+  const _role = window.MGT_DATA.currentUser.role;
+  const isCtv = _role === "collaborator" || _role === "guest";
   return (
     <ThemeProvider>
-      <AppRoot/>
+      {isCtv ? <GuestApp/> : <AppRoot/>}
     </ThemeProvider>
   );
 }
@@ -56,6 +60,7 @@ function App() {
 function AppRoot() {
   const D = window.MGT_DATA;
   const isAdmin = D.can("dashboard", "r");  // admin-only pseudo-resource
+  const isCtv = D.currentUser.role === "collaborator" || D.currentUser.role === "guest";  // restricted web app
 
   // Re-render whenever data-loader fires 'mgt:datachanged' (after any
   // successful create/update/delete). The frozen screens read D.<arrays>
@@ -89,11 +94,11 @@ function AppRoot() {
   const unread = D.notifications.filter(n => !n.read).length;
 
   // Navigation helpers
-  const goTab = (id) => { setTab(id); setDetail(null); };
+  // CTV is locked to the "students" surface — ignore any nav to other tabs.
+  const goTab = (id) => { if (isCtv && id !== "students") return; setTab(id); setDetail(null); };
   const openStudent = (id, opts) => setDetail({ type: "student", id, ...(opts || {}) });
   const openPayment = (id) => setDetail({ type: "payment", id });
   const openClass   = (id) => { setTab("classes"); setDetail({ type: "class", id }); };
-  const openPermissions = (id) => setDetail({ type: "permissions", id });
 
   const TITLES = {
     dashboard:    { title: "Tổng quan"            },
@@ -110,7 +115,6 @@ function AppRoot() {
   if (detail?.type === "student") detailTitle = { title: D.getStudent(detail.id)?.name || "" };
   if (detail?.type === "payment") detailTitle = { title: detail.id };
   if (detail?.type === "class")   detailTitle = { title: D.getClass(detail.id)?.code || "" };
-  if (detail?.type === "permissions") detailTitle = { title: "Phân quyền · " + (D.getStaff(detail.id)?.name || "") };
 
   return (
     <div className="mgt-canvas" style={{
@@ -180,9 +184,6 @@ function AppRoot() {
               <ClassDetail classId={detail.id} onBack={() => setDetail(null)}
                            onOpenStudent={openStudent} isAdmin={D.can("classes", "update")}/>
             )}
-            {detail?.type === "permissions" && (
-              <PermissionsScreen userId={detail.id} onBack={() => setDetail(null)}/>
-            )}
 
             {/* List/screen views */}
             {!detail && tab === "dashboard" && isAdmin && <DashboardScreen onOpenStudent={openStudent}/>}
@@ -194,7 +195,7 @@ function AppRoot() {
                                                                   onAddClass={() => setAddClass(true)}
                                                                   isAdmin={D.can("classes", "create")}/>}
             {!detail && tab === "notifications" && <NotificationsScreen onOpenStudent={openStudent}/>}
-            {!detail && tab === "organization"  && <OrganizationScreen onOpenClass={openClass} onOpenPermissions={openPermissions}/>}
+            {!detail && tab === "organization"  && <OrganizationScreen onOpenClass={openClass} onOpenStudent={openStudent}/>}
           </ScreenErrorBoundary>
         </div>
       </main>
@@ -276,7 +277,8 @@ function ReportChoiceModal({ open, onClose }) {
   return (
     <Modal open={open} onClose={onClose} width={520}
            title="Xuất báo cáo"
-           subtitle="Chọn định dạng phù hợp với mục đích sử dụng">
+           subtitle="Chọn định dạng phù hợp với mục đích sử dụng"
+           footer={null}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <Option icon="chart" title="Trực quan (PDF)"
                 hint="Bảng tổng quan có biểu đồ và KPI — phù hợp để xem nhanh."
@@ -285,7 +287,7 @@ function ReportChoiceModal({ open, onClose }) {
                 hint="Bảng số liệu chính thức 7 ngày gần nhất — phù hợp để lưu trữ, gửi chủ doanh nghiệp."
                 onClick={() => choose(() => D.api.downloadFormalReportPdf())}/>
         <Option icon="download" title="Số liệu (Excel)"
-                hint="Workbook 6 sheet — cùng dữ liệu 7 ngày, tiện chỉnh sửa, lọc và in lại."
+                hint="Workbook 6 sheet (Tổng quan · Học viên · Thanh toán · Lớp học · CTV ×2) — toàn bộ dữ liệu, tiện lọc và in lại."
                 onClick={() => choose(() => D.api.downloadFormalReportXlsx())}/>
       </div>
     </Modal>
@@ -326,7 +328,22 @@ function Boot() {
       </div>
     );
   }
-  return <App />;
+  return (
+    <>
+      {window._MGT_OFFLINE && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 200000,
+          background: "color-mix(in oklab, var(--neon-violet, #a78bfa) 80%, #000)",
+          padding: "7px 16px", textAlign: "center",
+          fontFamily: "var(--font-ui, system-ui)", fontSize: 12, fontWeight: 600, color: "#fff",
+          letterSpacing: "0.01em",
+        }}>
+          Không có mạng — đang xem dữ liệu đã lưu. Kết nối internet để cập nhật.
+        </div>
+      )}
+      <App />
+    </>
+  );
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(<Boot />);
