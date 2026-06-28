@@ -5,8 +5,11 @@ Adaptive: `_call_diachi` includes DIACHI_API_KEY when set (fast, no throttle); o
 free tier it gets rate-limited, so we sleep and retry. Fallback: if a ward can't be
 converted, dia_chi is left unchanged (= dia_chi_cccd, the old address), per spec.
 
-Run on the server:
-  docker compose exec -T backend python /app/scripts/backfill_dia_chi.py
+Run on the server as a MODULE (not by path) — `docker compose exec` uses the image
+WORKDIR /app, and `-m` puts /app on sys.path, so `app` imports without any path hack.
+(The package is intentionally not pip-installed: Py3.14 + hatchling editable is broken,
+and a real install breaks the live-mount + --reload workflow.)
+  docker compose exec -T backend python -m scripts.backfill_dia_chi
 """
 import asyncio
 
