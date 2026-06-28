@@ -39,7 +39,8 @@ class Student(BaseModel):
     # Contact
     so_dien_thoai: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     dia_chi_email: Mapped[str | None] = mapped_column(String(255))
-    dia_chi: Mapped[str | None] = mapped_column(Text)
+    dia_chi: Mapped[str | None] = mapped_column(Text)  # NEW address (diachi.io-converted; fallback = old)
+    dia_chi_cccd: Mapped[str | None] = mapped_column(Text)  # OLD address exactly as on the CCCD (export col F)
     phuong_xa: Mapped[str | None] = mapped_column(String(100))
     quan_huyen: Mapped[str | None] = mapped_column(String(100))
     tinh_thanh: Mapped[str | None] = mapped_column(String(100))

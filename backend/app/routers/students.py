@@ -27,6 +27,7 @@ from app.utils.dates import (
     vn_to_iso_date,
 )
 from app.utils.id_generator import next_student_id
+from app.utils.vn_address import old_address_from_qr
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -297,6 +298,7 @@ async def create_student(
         cccd_qr_raw=f.cccdQrRaw or None,
         so_dien_thoai=f.phone or "",
         dia_chi=f.address or None,
+        dia_chi_cccd=(old_address_from_qr(f.cccdQrRaw) or f.address) or None,
         tinh_thanh=f.noiTamTru or None,
         loai_bang_lai=LicenseType(license_to_db(f.licence)),
         trang_thai=StudentStatus.active,
@@ -375,7 +377,11 @@ async def update_student(
     if "noiTamTru" in fields:   s.tinh_thanh = fields["noiTamTru"] or None
     if "ngayCapCCCD" in fields: s.cccd_issued_date = vn_to_iso_date(fields["ngayCapCCCD"])
     if "noiCapCCCD" in fields:  s.cccd_issued_place = fields["noiCapCCCD"] or None
-    if "cccdQrRaw" in fields:   s.cccd_qr_raw = fields["cccdQrRaw"] or None
+    if "cccdQrRaw" in fields:
+        s.cccd_qr_raw = fields["cccdQrRaw"] or None
+        _old = old_address_from_qr(fields["cccdQrRaw"])
+        if _old:
+            s.dia_chi_cccd = _old
     if "licence" in fields:     s.loai_bang_lai = LicenseType(license_to_db(fields["licence"]))
     if "notes" in fields:       s.ghi_chu = fields["notes"] or None
     if "profileComplete" in fields: s.profile_complete = fields["profileComplete"]

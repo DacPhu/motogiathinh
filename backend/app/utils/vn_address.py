@@ -76,6 +76,14 @@ def recombine(detail: str, converted_admin: str) -> str:
     return re.sub(r"\s+", " ", out).strip().strip(",").strip()
 
 
+def old_address_from_qr(raw) -> str:
+    """The OLD address (field index 5) of a pipe-delimited CCCD QR payload."""
+    if not raw:
+        return ""
+    parts = str(raw).split("|")
+    return parts[5].strip() if len(parts) > 5 else ""
+
+
 def addr_cache_key(admin_tail: str) -> str:
     """Stable, ward-level Redis key — folded so spelling/diacritic variants share it."""
     return "addr:v1:" + fold(admin_tail)

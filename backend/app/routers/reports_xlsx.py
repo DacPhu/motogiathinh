@@ -56,21 +56,15 @@ def _pay_status_vn(paid: int, total_fee) -> str:
     if paid > 0:          return "Còn nợ"
     return "Chưa nộp"
 
-def _qr_old_address(raw) -> str:
-    """OLD on-CCCD address = field index 5 of the pipe-delimited CCCD QR payload
-    (id|oldCMND|name|dob|gender|ADDRESS|issueDate)."""
-    if not raw:
-        return ""
-    parts = str(raw).split("|")
-    return parts[5].strip() if len(parts) > 5 else ""
-
 def _reconstruct_qr(s) -> str:
-    """Rebuild an approximate CCCD-QR string from stored fields (legacy students)."""
+    """Rebuild an approximate CCCD-QR string from stored fields (legacy students),
+    using the OLD on-CCCD address (dia_chi_cccd)."""
     if not s.cccd_number:
         return ""
     dob = s.ngay_sinh.strftime("%d%m%Y") if s.ngay_sinh else ""
     iss = s.cccd_issued_date.strftime("%d%m%Y") if s.cccd_issued_date else ""
-    return "|".join([s.cccd_number, "", s.ten_hoc_vien or "", dob, _GENDER_VN.get(_ev(s.gioi_tinh), ""), s.dia_chi or "", iss])
+    addr = getattr(s, "dia_chi_cccd", None) or s.dia_chi or ""
+    return "|".join([s.cccd_number, "", s.ten_hoc_vien or "", dob, _GENDER_VN.get(_ev(s.gioi_tinh), ""), addr, iss])
 
 
 # ── Low-level sheet primitives ─────────────────────────────────────────────────
@@ -200,8 +194,8 @@ def student_sheet(ws, students, branch_map, user_map, pos_paid, class_map) -> No
         ws.append([
             s.ma_hoc_vien, s.ten_hoc_vien, _vn_date(s.ngay_sinh),
             _vn_label(_GENDER_VN, s.gioi_tinh), s.cccd_number or "",
-            _qr_old_address(getattr(s, "cccd_qr_raw", None)),  # F: OLD addr parsed from QR
-            s.dia_chi or "",                                   # G: NEW addr (converted, stored)
+            getattr(s, "dia_chi_cccd", None) or "",                 # F: OLD address (on CCCD)
+            s.dia_chi or "",                                        # G: NEW address (diachi-converted)
             getattr(s, "cccd_qr_raw", None) or _reconstruct_qr(s),  # H: raw QR (rebuilt for legacy)
             s.so_dien_thoai, _ev(s.loai_bang_lai),
             _vn_label(_STATUS_VN, s.trang_thai),
