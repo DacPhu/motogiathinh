@@ -712,13 +712,14 @@
         // Old→new Vietnamese address (2025 admin reform) via diachi.io proxy.
         // Never throws — returns the original address on any failure.
         async convertAddress(address) {
-          if (!address || !String(address).trim()) return { converted: address || '', notSure: false, ok: false };
+          if (!address || !String(address).trim()) return { converted: address || '', notSure: false, ok: false, rateLimited: false };
           try {
             const r = await api('/address/convert', { method: 'POST', body: { addresses: [address] } });
             const it = r && r.results && r.results[0];
-            return it ? { converted: it.converted || address, notSure: !!it.notSure, ok: !!it.ok }
-                      : { converted: address, notSure: true, ok: false };
-          } catch (e) { return { converted: address, notSure: true, ok: false }; }
+            const rateLimited = !!(r && r.rateLimited);
+            return it ? { converted: it.converted || address, notSure: !!it.notSure, ok: !!it.ok, rateLimited }
+                      : { converted: address, notSure: true, ok: false, rateLimited };
+          } catch (e) { return { converted: address, notSure: true, ok: false, rateLimited: false }; }
         },
         async createPayment(payload) { const r = patchPaymentIn(await api('/payments', { method: 'POST', body: payload })); this._bump(); return r; },
         async createRental(payload) {

@@ -305,7 +305,12 @@ function GuestStudentDetail({ student, onBack }) {
       }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
       if (out.fields.address && D.api && D.api.convertAddress) {
-        try { const c = await D.api.convertAddress(out.fields.address); if (c && c.converted) out.fields.address = c.converted; } catch (e) {}
+        try {
+          const c = await D.api.convertAddress(out.fields.address);
+          if (c && c.converted) out.fields.address = c.converted;
+          // ok=false ⇒ rate-limited/failed ⇒ this is the OLD address, not converted.
+          out.fields.addressNotSure = !(c && c.ok);
+        } catch (e) { out.fields.addressNotSure = true; }
       }
       setQrInfo(out.fields);
       setNewFiles(prev => ({ ...prev, cccdQR: file }));
@@ -314,7 +319,7 @@ function GuestStudentDetail({ student, onBack }) {
     } finally { setQrBusy(false); }
   };
 
-  const canSubmit = !busy && isDirty && (!qrReplaced || !!qrInfo?.idNumber);
+  const canSubmit = !busy && !qrBusy && isDirty && (!qrReplaced || !!qrInfo?.idNumber);
 
   const submit = async () => {
     if (busyRef.current || !canSubmit) return;
@@ -385,6 +390,9 @@ function GuestStudentDetail({ student, onBack }) {
       </div>
 
       {err && <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>Lỗi: {err}</span>}
+      {qrReplaced && qrInfo?.addressNotSure && (
+        <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-pink)" }}>⚠ Địa chỉ chưa chuyển đổi — kiểm tra lại.</span>
+      )}
 
       <button onClick={submit} disabled={!canSubmit} style={{
         padding: "14px 16px", borderRadius: 14, border: "none", cursor: canSubmit ? "pointer" : "not-allowed",
@@ -478,7 +486,12 @@ function GuestAddStudentModal({ open, onClose }) {
       }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
       if (out.fields.address && D.api && D.api.convertAddress) {
-        try { const c = await D.api.convertAddress(out.fields.address); if (c && c.converted) out.fields.address = c.converted; } catch (e) {}
+        try {
+          const c = await D.api.convertAddress(out.fields.address);
+          if (c && c.converted) out.fields.address = c.converted;
+          // ok=false ⇒ rate-limited/failed ⇒ this is the OLD address, not converted.
+          out.fields.addressNotSure = !(c && c.ok);
+        } catch (e) { out.fields.addressNotSure = true; }
       }
       setQrInfo(out.fields);
       setName(out.fields.name || "");
@@ -509,6 +522,7 @@ function GuestAddStudentModal({ open, onClose }) {
 
   const submit = async () => {
     if (busyRef.current || busy) return;
+    if (qrBusy) { gToast("Đang xử lý mã QR, đợi một chút…", "info"); return; }
     // THÊM is always clickable: validate on click and flag gaps in red.
     if (dupErr || !isComplete) {
       setShowErrors(true);
@@ -591,6 +605,9 @@ function GuestAddStudentModal({ open, onClose }) {
               )}
             </div>
           </div>
+          {qrInfo?.addressNotSure && (
+            <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-pink)" }}>⚠ Địa chỉ chưa chuyển đổi — sẽ lưu địa chỉ cũ, kiểm tra lại sau.</span>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 10 }}>
             <Input label="Số điện thoại" value={phone} onChange={setPhone} placeholder="090 123 4567" digits maxDigits={10} format={window.fmtPhone}
                    success={!missing.phone} invalid={showErrors && missing.phone}/>

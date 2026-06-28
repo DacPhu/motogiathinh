@@ -35,9 +35,14 @@ function AddStudentModal({ open, onClose, onSave }) {
       const f = (out && out.fields) || {};
       // Convert the old (pre-2025-reform) address to its new form before it
       // populates the form (both Nơi thường trú + Nơi tạm trú derive from it).
+      let addrOk = true;
       if (out && out.ok && f.address && D.api && D.api.convertAddress) {
         setQrToast({ kind: "info", msg: "Đang cập nhật địa chỉ…" });
-        try { const c = await D.api.convertAddress(f.address); if (c && c.converted) f.address = c.converted; } catch (e) {}
+        try {
+          const c = await D.api.convertAddress(f.address);
+          if (c && c.converted) f.address = c.converted;
+          addrOk = !!(c && c.ok);  // false ⇒ rate-limited/failed ⇒ kept the OLD address
+        } catch (e) { addrOk = false; }
       }
       const applied = [];
       if (out && out.ok) {
@@ -60,7 +65,9 @@ function AddStudentModal({ open, onClose, onSave }) {
         });
       }
       if (out && out.ok && applied.length) {
-        setQrToast({ kind: "ok", msg: `QR đã điền ${applied.length} trường` });
+        setQrToast(addrOk
+          ? { kind: "ok", msg: `QR đã điền ${applied.length} trường` }
+          : { kind: "warn", msg: `QR đã điền ${applied.length} trường — địa chỉ chưa chuyển đổi, kiểm tra lại` });
       } else {
         setQrToast({ kind: "warn", msg: "Không đọc được mã QR — chụp lại ảnh rõ mã QR hơn." });
       }
@@ -119,7 +126,8 @@ function AddStudentModal({ open, onClose, onSave }) {
            primaryLabel="Lưu học viên"
            primaryAction={() => { onSave && onSave({ form, docs, profileComplete, docFiles }); onClose(); }}
            primaryDisabled={
-             !form.name || !form.classId || !form.responsibleStaffId
+             qrBusy  /* wait for QR scan + address conversion before saving */
+             || !form.name || !form.classId || !form.responsibleStaffId
              || !form.feePlanId  /* required so totalFee/balance can be tracked — SPEC §3 */
              || openClasses.length === 0
            }
