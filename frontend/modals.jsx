@@ -61,6 +61,7 @@ function AddStudentModal({ open, onClose, onSave }) {
           // Nơi cấp defaults to the standard issuing authority.
           set("noiTamTru",   f.address);
           next.noiCapCCCD = "Cục CS QLHC về TTXH"; applied.push("noiCapCCCD");
+          if (out.raw) next.cccdQrRaw = out.raw;  // raw QR payload for export
           return next;
         });
       }

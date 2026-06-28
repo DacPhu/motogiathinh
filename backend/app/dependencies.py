@@ -266,3 +266,24 @@ async def accessible_class_ids(db: AsyncSession, user: User) -> Optional[set[uui
         for c in result.scalars().all()
         if compute_class_status(c, now) in ACTIVE_CLASS_STATUSES
     }
+
+
+async def assigned_class_ids(db: AsyncSession, user: User) -> Optional[set[uuid.UUID]]:
+    """All class ids assigned to a COLLABORATOR, regardless of active status.
+
+    Used for DOC UPLOADS (not reads) so a CTV can still attach documents to
+    students in classes that have since finished (đã kết thúc) — the common
+    "completing a legacy profile with missing CCCD photos" case.
+    admin/staff → None (no filter).
+    """
+    from app.models.user_assignment import UserClassAssignment
+
+    if user.role != RoleName.collaborator:
+        return None
+    result = await db.execute(
+        select(UserClassAssignment.class_id).where(
+            UserClassAssignment.user_id == user.id,
+            UserClassAssignment.deleted_at.is_(None),
+        )
+    )
+    return {row[0] for row in result.all()}

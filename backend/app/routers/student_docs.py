@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.core.storage import upload_bytes
 from app.dependencies import DB, CurrentUser, require_permission
@@ -38,7 +38,9 @@ async def _load_accessible_student(db, current_user, student_id: str) -> Student
     s = await _get_student(db, student_id)
     if not s:
         raise HTTPException(404, "student_not_found")
-    if not await _student_accessible(db, current_user, s.id):
+    # active_only=False: a CTV may attach docs to students in ANY of their
+    # assigned classes (incl. finished ones), so legacy profiles can be completed.
+    if not await _student_accessible(db, current_user, s.id, active_only=False):
         raise HTTPException(403, "class_not_accessible")
     return s
 
@@ -61,7 +63,9 @@ async def upload_doc(
     ext = (file.filename or "").rsplit(".", 1)[-1].lower() or "bin"
     object_key = f"students/{s.id}/{key}-{int(datetime.now(timezone.utc).timestamp()*1000)}.{ext}"
     url = upload_bytes(object_key, content, content_type=file.content_type or "application/octet-stream")
-    setattr(s, _DOC_COLUMN[key], url)
+    # Atomic single-column update — avoids the load-modify-commit lost-update if
+    # two doc uploads for the same student ever overlap (e.g. two devices).
+    await db.execute(update(Student).where(Student.id == s.id).values(**{_DOC_COLUMN[key]: url}))
     await db.commit()
     return {"ok": True, "key": key, "url": url, "size": len(content)}
 
@@ -77,7 +81,7 @@ async def delete_doc(
     if key not in DOC_KEYS:
         raise HTTPException(400, "invalid_key")
     s = await _load_accessible_student(db, current_user, student_id)
-    setattr(s, _DOC_COLUMN[key], None)
+    await db.execute(update(Student).where(Student.id == s.id).values(**{_DOC_COLUMN[key]: None}))
     await db.commit()
     return {"ok": True, "key": key}
 
