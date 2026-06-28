@@ -116,6 +116,36 @@ def r2_upload_file(key: str, path: str, content_type: str = "application/octet-s
     return key
 
 
+def r2_prune_prefix(prefix: str, keep: int) -> int:
+    """Keep the newest `keep` objects under `prefix` in R2; delete older ones."""
+    if not r2_enabled() or keep < 1:
+        return 0
+
+    client = _get_r2_client()
+    paginator = client.get_paginator("list_objects_v2")
+    objects = []
+    for page in paginator.paginate(Bucket=settings.R2_BUCKET_NAME, Prefix=prefix):
+        objects.extend(page.get("Contents", []))
+
+    stale = sorted(
+        objects,
+        key=lambda obj: obj.get("LastModified"),
+        reverse=True,
+    )[keep:]
+    if not stale:
+        return 0
+
+    deleted = 0
+    for start in range(0, len(stale), 1000):
+        batch = stale[start:start + 1000]
+        client.delete_objects(
+            Bucket=settings.R2_BUCKET_NAME,
+            Delete={"Objects": [{"Key": obj["Key"]} for obj in batch], "Quiet": True},
+        )
+        deleted += len(batch)
+    return deleted
+
+
 # -----------------------------------------------------------------------------
 
 def _ensure_bucket(client):

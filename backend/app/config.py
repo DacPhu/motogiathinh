@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     R2_ACCESS_KEY: str = ""
     R2_SECRET_KEY: str = ""
     R2_BUCKET_NAME: str = ""
+    DB_BACKUP_RETENTION: int = 5
 
     # Email
     SMTP_HOST: str = "smtp.mailgun.org"

@@ -8,6 +8,7 @@ All are no-ops unless R2 is enabled + configured (storage.r2_enabled()).
 """
 import logging
 import os
+import re
 import subprocess
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlparse
@@ -17,6 +18,14 @@ from app.config import settings
 from app.core import storage
 
 logger = logging.getLogger(__name__)
+
+_SAFE_KEY_PART_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _safe_key_part(value: str, fallback: str = "database") -> str:
+    """Return a conservative S3 key/file component."""
+    cleaned = _SAFE_KEY_PART_RE.sub("-", value).strip(".-")
+    return cleaned or fallback
 
 
 @celery.task(
@@ -70,14 +79,15 @@ def backup_database_to_r2(self):
         .replace("+psycopg", "")
     )
     u = urlparse(raw)
-    dbname = (u.path or "/").lstrip("/")
+    dbname = unquote((u.path or "/").lstrip("/")) or "postgres"
+    safe_dbname = _safe_key_part(dbname)
     env = dict(os.environ)
     if u.password:
         env["PGPASSWORD"] = unquote(u.password)
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    key = f"db-backups/{dbname}-{ts}.dump"
-    tmp = f"/tmp/{dbname}-{ts}.dump"
+    key = f"db-backups/{safe_dbname}-{ts}.dump"
+    tmp = f"/tmp/{safe_dbname}-{ts}.dump"
     try:
         subprocess.run(
             [
@@ -92,13 +102,19 @@ def backup_database_to_r2(self):
             env=env,
             capture_output=True,
         )
+        if not os.path.exists(tmp) or os.path.getsize(tmp) <= 0:
+            raise RuntimeError("pg_dump completed but produced an empty backup file")
         storage.r2_upload_file(key, tmp, content_type="application/octet-stream")
         size = os.path.getsize(tmp)
-        logger.info("DB backup uploaded to R2: %s (%d bytes)", key, size)
-        return {"key": key, "bytes": size}
+        pruned = storage.r2_prune_prefix("db-backups/", settings.DB_BACKUP_RETENTION)
+        logger.info("DB backup uploaded to R2: %s (%d bytes, pruned=%d)", key, size, pruned)
+        return {"key": key, "bytes": size, "pruned": pruned}
     except subprocess.CalledProcessError as exc:
         stderr = exc.stderr.decode(errors="replace") if exc.stderr else ""
         logger.error("pg_dump failed (rc=%s): %s", exc.returncode, stderr)
+        raise self.retry(exc=exc)
+    except Exception as exc:
+        logger.error("DB backup failed for %s; retrying", key, exc_info=True)
         raise self.retry(exc=exc)
     finally:
         try:
