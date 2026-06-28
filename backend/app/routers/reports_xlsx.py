@@ -64,6 +64,14 @@ def _qr_old_address(raw) -> str:
     parts = str(raw).split("|")
     return parts[5].strip() if len(parts) > 5 else ""
 
+def _reconstruct_qr(s) -> str:
+    """Rebuild an approximate CCCD-QR string from stored fields (legacy students)."""
+    if not s.cccd_number:
+        return ""
+    dob = s.ngay_sinh.strftime("%d%m%Y") if s.ngay_sinh else ""
+    iss = s.cccd_issued_date.strftime("%d%m%Y") if s.cccd_issued_date else ""
+    return "|".join([s.cccd_number, "", s.ten_hoc_vien or "", dob, _GENDER_VN.get(_ev(s.gioi_tinh), ""), s.dia_chi or "", iss])
+
 
 # ── Low-level sheet primitives ─────────────────────────────────────────────────
 def _xhdr(ws, headers: list[str]) -> None:
@@ -194,7 +202,7 @@ def student_sheet(ws, students, branch_map, user_map, pos_paid, class_map) -> No
             _vn_label(_GENDER_VN, s.gioi_tinh), s.cccd_number or "",
             _qr_old_address(getattr(s, "cccd_qr_raw", None)),  # F: OLD addr parsed from QR
             s.dia_chi or "",                                   # G: NEW addr (converted, stored)
-            getattr(s, "cccd_qr_raw", None) or "",             # H: raw QR payload
+            getattr(s, "cccd_qr_raw", None) or _reconstruct_qr(s),  # H: raw QR (rebuilt for legacy)
             s.so_dien_thoai, _ev(s.loai_bang_lai),
             _vn_label(_STATUS_VN, s.trang_thai),
             _vn_date(s.ngay_dang_ky or s.created_at),
