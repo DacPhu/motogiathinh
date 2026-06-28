@@ -209,12 +209,16 @@ function AppRoot() {
                            // failed upload doesn't block the rest — but surface
                            // each failure via toast (was console.warn-only,
                            // invisible to the user).
-                           await Promise.all(Object.entries(docFiles || {}).map(
-                             ([key, file]) => file ? D.api.uploadStudentDoc(created.id, key, file).catch(e => {
+                           // Sequential, not Promise.all — concurrent uploads raced
+                           // the access check + per-row update → intermittent 403s.
+                           for (const [key, file] of Object.entries(docFiles || {})) {
+                             if (!file) continue;
+                             try { await D.api.uploadStudentDoc(created.id, key, file); }
+                             catch (e) {
                                console.warn('upload failed', key, e);
                                if (window.MGT_TOAST) window.MGT_TOAST(`Lỗi tải tài liệu ${key}: ${e.message}`);
-                             }) : null
-                           ));
+                             }
+                           }
                          } catch (e) {
                            // Surface the create failure as a toast (was alert).
                            if (window.MGT_TOAST) window.MGT_TOAST("Lỗi tạo học viên: " + e.message);

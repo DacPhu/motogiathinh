@@ -312,6 +312,7 @@ function GuestStudentDetail({ student, onBack }) {
           out.fields.addressNotSure = !(c && c.ok);
         } catch (e) { out.fields.addressNotSure = true; }
       }
+      out.fields.qrRaw = out.raw;  // keep the raw QR payload for the Bộ export
       setQrInfo(out.fields);
       setNewFiles(prev => ({ ...prev, cccdQR: file }));
     } catch (e) {
@@ -331,6 +332,7 @@ function GuestStudentDetail({ student, onBack }) {
       if (licence !== (student.licence || "")) patch.licence = licence || null;
       if (qrReplaced && qrInfo?.idNumber)      patch.idNumber = qrInfo.idNumber;
       if (qrReplaced && qrInfo?.address)       patch.address  = qrInfo.address;  // converted new address
+      if (qrReplaced && qrInfo?.qrRaw)         patch.cccdQrRaw = qrInfo.qrRaw;   // raw QR payload for export
       if (Object.keys(patch).length) await D.api.updateStudent(student.id, patch);
       for (const [key, file] of Object.entries(newFiles)) {
         if (!file) continue;
@@ -493,6 +495,7 @@ function GuestAddStudentModal({ open, onClose }) {
           out.fields.addressNotSure = !(c && c.ok);
         } catch (e) { out.fields.addressNotSure = true; }
       }
+      out.fields.qrRaw = out.raw;  // keep the raw QR payload for the Bộ export
       setQrInfo(out.fields);
       setName(out.fields.name || "");
       setDocFiles(prev => ({ ...prev, cccdQR: file }));
@@ -544,15 +547,21 @@ function GuestAddStudentModal({ open, onClose }) {
         ...(qrInfo.gender && { gender: qrInfo.gender }),
         ...(qrInfo.address && { address: qrInfo.address }),
         ...(qrInfo.ngayCapCCCD && { ngayCapCCCD: qrInfo.ngayCapCCCD }),
+        ...(qrInfo.qrRaw && { cccdQrRaw: qrInfo.qrRaw }),
       };
       const uploadMap = { cccd: docFiles.cccd, cccdBack: docFiles.cccdBack, cccdQR: docFiles.cccdQR, the3x4: docFiles.the3x4,
                           bangLaiFront: docFiles.bangLaiFront, bangLaiBack: docFiles.bangLaiBack };
       const docs = { cccd: !!uploadMap.cccd, cccdBack: !!uploadMap.cccdBack, cccdQR: !!uploadMap.cccdQR, the3x4: !!uploadMap.the3x4,
                      bangLaiFront: !!uploadMap.bangLaiFront, bangLaiBack: !!uploadMap.bangLaiBack };
       const created = await D.api.createStudent({ form, docs, profileComplete: false });
-      await Promise.all(Object.entries(uploadMap).map(
-        ([key, file]) => file ? D.api.uploadStudentDoc(created.id, key, file).catch((e) => gToast(`Lỗi tải ảnh ${key}: ${e.message}`, "error")) : null
-      ));
+      // Upload docs SEQUENTIALLY (not Promise.all): concurrent uploads raced the
+      // per-student access check + per-row update → intermittent 403s + lost images
+      // (CCCD front/back failing together, QR separately).
+      for (const [key, file] of Object.entries(uploadMap)) {
+        if (!file) continue;
+        try { await D.api.uploadStudentDoc(created.id, key, file); }
+        catch (e) { gToast(`Lỗi tải ảnh ${key}: ${e.message}`, "error"); }
+      }
       // Successful create — drop the saved draft.
       try { localStorage.removeItem(DRAFT_KEY); } catch {}
       setSuccess({ name: form.name, licence: form.licence, classCode: D.getClass(form.classId)?.code || "—" });

@@ -21,7 +21,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 from sqlalchemy import select
 
 from app.dependencies import CurrentUser, DB
-from app.models.class_model import Class
+from app.models.class_model import Class, ClassEnrollment
 from app.models.enums import RoleName
 from app.models.payment import Payment
 from app.models.student import Student
@@ -127,7 +127,7 @@ async def dashboard_pdf(current_user: CurrentUser, db: DB):
            ["Tổng học viên", str(len(students))],
            ["Tổng doanh thu", _money(total_rev) + " đ"],
            ["Số chi nhánh", str(len(branches))]] + \
-          [[k.upper(), str(v)] for k, v in by_status.items()]
+          [[rx._STATUS_VN.get(k, k), str(v)] for k, v in by_status.items()]
     t = Table(kpi, colWidths=[9*cm, 6*cm])
     t.setStyle(TableStyle(_tbl_style()))
     story += [t, Spacer(1, 0.5*cm),
@@ -155,6 +155,11 @@ async def data_pdf(current_user: CurrentUser, db: DB):
     payments_7 = (await db.execute(
         select(Payment).where(Payment.deleted_at.is_(None), Payment.collected_at >= since).order_by(Payment.collected_at.desc())
     )).scalars().all()
+    # Resolve payment → student code (the old str(uuid)[:8]+"…" was meaningless).
+    _sid = {p.student_id for p in payments_7 if p.student_id}
+    smap = {s.id: s for s in (await db.execute(
+        select(Student).where(Student.id.in_(_sid))
+    )).scalars().all()} if _sid else {}
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1.5*cm, rightMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
@@ -168,7 +173,9 @@ async def data_pdf(current_user: CurrentUser, db: DB):
     srows = [["MÃ HV", "HỌ TÊN", "SĐT", "BẰNG LÁI", "TRẠNG THÁI", "NGÀY ĐK"]]
     for s in students_7:
         srows.append([s.ma_hoc_vien, s.ten_hoc_vien, s.so_dien_thoai,
-                      _enum_val(s.loai_bang_lai), _enum_val(s.trang_thai), _vn_date(s.created_at)])
+                      _enum_val(s.loai_bang_lai),
+                      rx._STATUS_VN.get(_enum_val(s.trang_thai), _enum_val(s.trang_thai)),
+                      _vn_date(s.created_at)])
     t = Table(srows, colWidths=[2.5*cm, 5*cm, 3*cm, 2*cm, 3*cm, 2.5*cm])
     t.setStyle(TableStyle(_tbl_style()))
     story += [t, Spacer(1, 0.4*cm)]
@@ -178,8 +185,11 @@ async def data_pdf(current_user: CurrentUser, db: DB):
                            T("h2", fontSize=10, spaceAfter=4, textColor=_HEADER, fontName="Helvetica-Bold")))
     prows = [["MÃ GD", "MÃ HV", "SỐ TIỀN (đ)", "PHƯƠNG THỨC", "NGÀY THU"]]
     for p in payments_7:
-        prows.append([p.ma_giao_dich, str(p.student_id)[:8] + "…",
-                      _money(p.so_tien), _enum_val(p.phuong_thuc), _vn_date(p.collected_at)])
+        prows.append([p.ma_giao_dich,
+                      (smap[p.student_id].ma_hoc_vien if p.student_id in smap else "—"),
+                      _money(p.so_tien),
+                      rx._METHOD_VN.get(_enum_val(p.phuong_thuc), _enum_val(p.phuong_thuc)),
+                      _vn_date(p.collected_at)])
     t2 = Table(prows, colWidths=[3.5*cm, 3*cm, 3.5*cm, 3*cm, 2.5*cm])
     t2.setStyle(TableStyle(_tbl_style()))
     story.append(t2)
@@ -215,6 +225,17 @@ async def data_xlsx(current_user: CurrentUser, db: DB):
     ctvs        = [u for u in all_users
                    if u.role == RoleName.collaborator and u.is_active and not u.deleted_at]
     ctv_map     = {u.id: u for u in ctvs}
+
+    # student → primary class label (for the Học viên sheet "Lớp học" column)
+    class_by_id = {c.id: c for c in classes}
+    enrollments = (await db.execute(
+        select(ClassEnrollment).where(ClassEnrollment.deleted_at.is_(None))
+    )).scalars().all()
+    class_map: dict = {}
+    for e in enrollments:
+        c = class_by_id.get(e.class_id)
+        if c and e.student_id not in class_map:
+            class_map[e.student_id] = c.ma_lop or c.ten_lop or ""
 
     # ── Per-student positive payment totals ────────────────────────────────────
     pos_paid: dict = defaultdict(int)
@@ -268,7 +289,7 @@ async def data_xlsx(current_user: CurrentUser, db: DB):
         branch_students_month, branch_outstanding,
         status_counts, total_paid, total_outstanding, active_classes,
     )
-    rx.student_sheet(wb.create_sheet("Học viên"), students, branch_map, user_map, pos_paid)
+    rx.student_sheet(wb.create_sheet("Học viên"), students, branch_map, user_map, pos_paid, class_map)
     rx.payment_sheet(wb.create_sheet("Thanh toán"), payments, student_map, branch_map)
     rx.class_sheet(wb.create_sheet("Lớp học"), classes, branch_map)
     ctv_ids = set(ctv_map.keys())

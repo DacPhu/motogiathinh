@@ -35,6 +35,7 @@ class Student(BaseModel):
     cccd_number: Mapped[str | None] = mapped_column(String(20), unique=True, index=True)
     cccd_issued_date: Mapped[date | None] = mapped_column(Date)
     cccd_issued_place: Mapped[str | None] = mapped_column(String(200))
+    cccd_qr_raw: Mapped[str | None] = mapped_column(Text)  # raw pipe-delimited CCCD QR payload (Bộ export + old-address recovery)
     # Contact
     so_dien_thoai: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     dia_chi_email: Mapped[str | None] = mapped_column(String(255))

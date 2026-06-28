@@ -56,6 +56,14 @@ def _pay_status_vn(paid: int, total_fee) -> str:
     if paid > 0:          return "Còn nợ"
     return "Chưa nộp"
 
+def _qr_old_address(raw) -> str:
+    """OLD on-CCCD address = field index 5 of the pipe-delimited CCCD QR payload
+    (id|oldCMND|name|dob|gender|ADDRESS|issueDate)."""
+    if not raw:
+        return ""
+    parts = str(raw).split("|")
+    return parts[5].strip() if len(parts) > 5 else ""
+
 
 # ── Low-level sheet primitives ─────────────────────────────────────────────────
 def _xhdr(ws, headers: list[str]) -> None:
@@ -164,12 +172,12 @@ def summary_sheet(ws, now_dt, branches, students, classes,
 
 
 # ── Sheet 2: Học viên (enriched) ──────────────────────────────────────────────
-def student_sheet(ws, students, branch_map, user_map, pos_paid) -> None:
+def student_sheet(ws, students, branch_map, user_map, pos_paid, class_map) -> None:
     _xhdr(ws, [
         "MÃ HV", "HỌ TÊN", "NGÀY SINH", "GIỚI TÍNH", "SỐ CCCD",
         "Nơi thường trú - trên CCCD", "Nơi thường trú - địa chỉ mới", "Mã QR CCCD",
         "ĐIỆN THOẠI", "LOẠI BẰNG", "TRẠNG THÁI",
-        "NGÀY ĐĂNG KÝ", "CHI NHÁNH",
+        "NGÀY ĐĂNG KÝ", "CHI NHÁNH", "LỚP HỌC",
         "ĐÃ THANH TOÁN (đ)", "CÒN LẠI (đ)", "TRẠNG THÁI THANH TOÁN",
         "NGƯỜI TẠO", "GHI CHÚ",
     ])
@@ -184,22 +192,23 @@ def student_sheet(ws, students, branch_map, user_map, pos_paid) -> None:
         ws.append([
             s.ma_hoc_vien, s.ten_hoc_vien, _vn_date(s.ngay_sinh),
             _vn_label(_GENDER_VN, s.gioi_tinh), s.cccd_number or "",
-            s.dia_chi or "",
-            getattr(s, "noi_thuong_tru_moi", None) or "",
-            getattr(s, "cccd_qr_raw", None) or "",
+            _qr_old_address(getattr(s, "cccd_qr_raw", None)),  # F: OLD addr parsed from QR
+            s.dia_chi or "",                                   # G: NEW addr (converted, stored)
+            getattr(s, "cccd_qr_raw", None) or "",             # H: raw QR payload
             s.so_dien_thoai, _ev(s.loai_bang_lai),
             _vn_label(_STATUS_VN, s.trang_thai),
             _vn_date(s.ngay_dang_ky or s.created_at),
             branch_map.get(s.branch_id, ""),
+            class_map.get(s.id, ""),                           # N: Lớp học
             paid, balance, _pay_status_vn(paid, s.total_fee),
             staff_name, s.ghi_chu or "",
         ])
         r = ws.max_row
         if i % 2 == 1:
-            for col in range(1, 19):
+            for col in range(1, 20):
                 ws.cell(r, col).fill = _FILL_ALT
-        ws.cell(r, 14).number_format = "#,##0"
         ws.cell(r, 15).number_format = "#,##0"
+        ws.cell(r, 16).number_format = "#,##0"
 
     _autofit(ws)
 

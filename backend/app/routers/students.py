@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, accessible_class_ids, require_permission
+from app.dependencies import DB, CurrentUser, accessible_class_ids, assigned_class_ids, require_permission
 from app.models.branch import Branch
 from app.models.class_model import Class, ClassEnrollment
 from app.models.enums import GenderType, LicenseType, RoleName, StudentStatus
@@ -112,14 +112,16 @@ async def _slug_map(db) -> dict:
     return {b.id: (b.slug or str(b.id)) for b in res.scalars().all()}
 
 
-async def _student_accessible(db, current_user, student_id: uuid.UUID) -> bool:
-    """Admin → always. Collaborator → student enrolled in an assigned ACTIVE
-    class. Staff → student in the staff's branch (unchanged original behavior;
-    NOT active-gated)."""
+async def _student_accessible(db, current_user, student_id: uuid.UUID, active_only: bool = True) -> bool:
+    """Admin → always. Collaborator → student enrolled in an assigned class
+    (ACTIVE-only for reads; ANY assigned class when active_only=False — used for
+    doc uploads so finished-class profiles can still be completed). Staff →
+    student in the staff's branch (unchanged original behavior; NOT active-gated)."""
     if current_user.role == RoleName.admin:
         return True
     if current_user.role == RoleName.collaborator:
-        acc = await accessible_class_ids(db, current_user)
+        acc = await (accessible_class_ids(db, current_user) if active_only
+                     else assigned_class_ids(db, current_user))
         if not acc:
             return False
         res = await db.execute(
@@ -209,6 +211,7 @@ class StudentCreateForm(BaseModel):
     profileComplete: bool = False
     responsibleStaffId: Optional[str] = None
     notes: Optional[str] = None
+    cccdQrRaw: Optional[str] = None  # raw CCCD QR payload, persisted for the Excel export
 
 
 class StudentDocsFlags(BaseModel):
@@ -291,6 +294,7 @@ async def create_student(
         cccd_number=f.idNumber or None,
         cccd_issued_date=vn_to_iso_date(f.ngayCapCCCD),
         cccd_issued_place=f.noiCapCCCD or None,
+        cccd_qr_raw=f.cccdQrRaw or None,
         so_dien_thoai=f.phone or "",
         dia_chi=f.address or None,
         tinh_thanh=f.noiTamTru or None,
@@ -345,6 +349,7 @@ class StudentUpdateRequest(BaseModel):
     profileComplete: Optional[bool] = None
     responsibleStaffId: Optional[str] = None
     notes: Optional[str] = None
+    cccdQrRaw: Optional[str] = None
 
 
 @router.patch("/{student_id}")
@@ -370,6 +375,7 @@ async def update_student(
     if "noiTamTru" in fields:   s.tinh_thanh = fields["noiTamTru"] or None
     if "ngayCapCCCD" in fields: s.cccd_issued_date = vn_to_iso_date(fields["ngayCapCCCD"])
     if "noiCapCCCD" in fields:  s.cccd_issued_place = fields["noiCapCCCD"] or None
+    if "cccdQrRaw" in fields:   s.cccd_qr_raw = fields["cccdQrRaw"] or None
     if "licence" in fields:     s.loai_bang_lai = LicenseType(license_to_db(fields["licence"]))
     if "notes" in fields:       s.ghi_chu = fields["notes"] or None
     if "profileComplete" in fields: s.profile_complete = fields["profileComplete"]
