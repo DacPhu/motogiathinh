@@ -229,15 +229,175 @@ The offline banner in `app.jsx:337` reads `window._MGT_OFFLINE` as a plain prope
 
 ---
 
+## TASK 6 — Silent re-authentication (DROPPED)
+**Status:** Dropped — not necessary for this use case.
+
+### Rationale
+CTVs are IT-managed: an IT guy logs them in once, credentials persist indefinitely.
+If the JWT expires (14-day TTL) or the user accidentally logs out, the existing
+recovery path works: `api()` 401 → `window.location.reload()` → login screen appears
+with prefilled credentials (via `window.MGT_CREDS` from native-bridge.js) → one tap
+to re-enter. With IndexedDB drafts (Task 5), photos survive the reload. Silent
+re-auth would add credential-storage complexity and a security surface for zero
+practical benefit on IT-managed devices where users log in once and stay logged in
+for weeks.
+
+---
+
+## TASK 10 — Offline mode audit and fix
+**Status:** Complete | **Scope:** frontend only
+
+### What changed
+
+**`frontend/data-loader.js` — reconnect detection (lines 994-1014):**
+- Added `_probeReconnect()` function after the `MGT_DATA_READY` assignment.
+- Short-circuits if `window._MGT_OFFLINE` is already false (no work to do).
+- Debounced: max once per 5 seconds via `_lastProbe` timestamp.
+- Probe: calls `api('/me')` — if it succeeds, clears `window._MGT_OFFLINE = false` and dispatches `mgt:connectivity` event.
+- Shows a Vietnamese toast on reconnect: "Đã khôi phục kết nối — có thể tải ảnh và lưu dữ liệu."
+- On probe failure (still offline): silently keeps the flag — no error shown.
+- Two listeners registered at IIFE scope:
+  - `window.addEventListener('online', _probeReconnect)` — standard browser reconnect event.
+  - `document.addEventListener('visibilitychange', ...)` — re-probes when app returns to foreground (essential for iOS WKWebView where `online` is unreliable).
+
+**`frontend/app.jsx` — reactive offline banner (lines 310, 316-320, 343):**
+- Added `offline` state via `React.useState(!!window._MGT_OFFLINE)`.
+- Added `useEffect` that listens for `mgt:connectivity` events and updates the `offline` state.
+- Banner JSX changed from `window._MGT_OFFLINE && (` to `offline && (`.
+- The banner now disappears automatically when connectivity is restored — no page reload needed.
+
+### Design decisions worth auditing
+
+1. **Probe endpoint:** Used `/me` (the existing auth-check endpoint). It's lightweight (single row lookup) and tests both network connectivity AND auth validity. If the JWT expired while offline, the probe 401s and `_MGT_OFFLINE` stays true — correct behavior: the user needs to re-login before they can write.
+
+2. **5-second debounce:** Prevents hammering `/me` on rapid visibility changes (e.g., user switching between apps quickly). The `online` event can also fire multiple times during network transitions.
+
+3. **No data refresh on reconnect:** The probe only clears the flag. A full data refresh (re-fetching all entities) would be nice but is secondary — the priority is unblocking writes. The data snapshot may be stale after offline, but it's the same stale data the user was viewing while offline.
+
+4. **Reconnect toast:** "Đã khôi phục kết nối — có thể tải ảnh và lưu dữ liệu." appears once on reconnect. Not repeated on subsequent `online`/`visibilitychange` events because the flag is already cleared by the first successful probe.
+
+### `_MGT_OFFLINE` reference audit
+
+All 6 references verified correct:
+- `data-loader.js:121` — `api()` blocks non-GET writes when offline. KEEP.
+- `data-loader.js:491` — set to true on cached boot. KEEP.
+- `data-loader.js:843` — `_upload` blocks when offline. KEEP.
+- `data-loader.js:1000` — probe short-circuits if already online. KEEP.
+- `data-loader.js:1006` — clears flag on successful probe. KEEP.
+- `app.jsx:310,317` — state initializer + event listener for reactive banner. KEEP.
+
+### Alignment with task brief
+- User boots offline → banner shows. Gets Wi-Fi → banner disappears within seconds. ✓
+- After reconnect, uploads work without app restart. ✓
+- The banner updates reactively (no stale state). ✓
+- `online` event + `visibilitychange` together cover both web and native. ✓
+- Debounce prevents hammering `/me`. ✓
+- "Đã khôi phục kết nối" toast on reconnect. ✓
+
+---
+
+## JWT TTL — changed from 3650 days to 90 days
+**Status:** Complete | **Scope:** backend only
+
+### What changed
+
+**`backend/app/core/security.py` (line 20):**
+- `SESSION_TTL_DAYS` changed from `3650` (~10 years) to `90` (90 days).
+- Updated the `create_session_token` docstring from "14 days" (which was stale — actual value was 3650) to "90 days".
+
+### Rationale
+The previous value (3650 days / ~10 years) was set as "mobile tokens never expire" — effectively permanent sessions. 90 days is long enough for CTVs who rarely log out, while still providing a reasonable security rotation window. The cookie `max_age` in `auth.py:26` and the JWT `exp` claim both derive from `SESSION_TTL_DAYS`, so this single change covers both.
+
+### 401 behavior (for reference)
+When a JWT does expire (after 90 days), `data-loader.js:130` handles 401 with `window.location.reload()`. This wipes React state (modal, photos), but IndexedDB (Task 5) and localStorage draft persistence survive the reload. The login screen appears with prefilled credentials (via `window.MGT_CREDS`). This recovery path is sufficient for the CTV use case — silent re-auth (Task 6) was dropped as unnecessary.
+
+### Alignment
+- Cookie TTL, JWT exp, and backend constant are all derived from the single `SESSION_TTL_DAYS` value.
+- No other hardcoded TTL references exist in the auth flow.
+
+---
+
+## TASK 7 — Prevent ALL partial success (the success gate)
+**Status:** Complete | **Scope:** frontend only
+
+### What changed
+
+**`frontend/screen-guest.jsx` — GuestAddStudentModal (complete submit overhaul):**
+
+- Added `DOC_LABELS` constant (Vietnamese labels for all doc keys) and `CTV_REQUIRED_DOCS` array (`['cccd', 'cccdBack', 'the3x4', 'cccdQR']`). `bangLaiFront`/`bangLaiBack` are optional — their failure does not block the success screen.
+- Replaced `busy`/`err`/`success` states with unified `result` state object: `{ status: 'idle'|'creating'|'uploading'|'partial'|'full'|'failed', studentId, name, licence, classCode, failedDocs, errMsg }`.
+- Added `retryBusy` state + `retryBusyRef` (ref for synchronous double-click guard) + `mountedRef` (guards against setState after unmount).
+- **Submit handler** now collects upload results instead of swallowing errors:
+  1. `createStudent()` → on fail: sets `result.status = 'failed'`, keeps form open for retry.
+  2. On success: clears localStorage text draft, sets `status = 'uploading'`.
+  3. Sequential upload loop collects `results[]` with `{ key, ok, error }`.
+  4. Filters `failedRequired = results.filter(r => !r.ok && CTV_REQUIRED_DOCS.includes(r.key))`.
+  5. If 0 failed required → `status = 'full'` → green `GuestSuccessView`.
+  6. If N failed required → `status = 'partial'` → partial success banner with retry button. **Does NOT clear IndexedDB draft** (photos stay for retry).
+- **`retryFailedUploads()`** function: clones `failedDocs` from result (avoids stale closure), uploads only failed docs sequentially, clones `failedDoc` entries. On all success → `status = 'full'`. On partial → updates `failedDocs` in result.
+- **Footer** adapts to state: "HỦY + THÊM" (idle), "Đang lưu…" / "Đang tải ảnh…" (operating), "Đóng" (full/partial).
+- **Body** renders: form (idle/failed), form + error banner (failed), `GuestSuccessView` (full), partial success banner with retry button (partial).
+- Photo slots and QR slot still clickable during idle/failed (for retry); button disabled during operating via `isOperating` flag.
+
+**`frontend/screen-guest.jsx` — GuestStudentDetail (submit overhaul):**
+
+- Same state architecture: `result` + `retryBusy` + `retryBusyRef` + `mountedRef`.
+- **Submit handler**: updates fields first (catches failure separately), then uploads photos collecting results. Only clears `newFiles` + IndexedDB on full success. On partial: keeps `newFiles` intact for retry, preserves `qrInfo` (audit fix MEDIUM-7).
+- **`retryFailedUploads()`**: same pattern — clones failedDocs, uploads only failed entries, updates state.
+- **`canSubmit`** now accounts for `hasPendingUploads` — allows submit when retry is needed even if `isDirty` is false.
+- JSX: inline partial/failed banners before the submit button. Button text cycles: "Đang lưu…" → "Đang tải ảnh…" → "Lưu thay đổi".
+
+**`frontend/screen-guest.jsx` — GuestApp (offline banner):**
+
+- Added CTV offline banner (reads `window._MGT_OFFLINE`), matching the admin banner in `app.jsx`. Shows "Không có mạng — đang xem dữ liệu đã lưu. Kết nối internet để cập nhật." when booted offline.
+
+### Design decisions worth auditing
+
+1. **Draft clearing timing**: localStorage text draft cleared immediately after `createStudent` succeeds (text data is on server). IndexedDB photos cleared ONLY on full success — photos stay in IndexedDB during partial for retry. If user closes modal without retrying, photos are orphaned in IndexedDB until next cleanup.
+
+2. **`mountedRef` guard**: All `setResult()` calls in async paths check `if (!mountedRef.current) return` to prevent setState on unmounted component. Set to `true` on mount, `false` on cleanup.
+
+3. **`retryBusyRef` vs `retryBusy`**: Ref provides synchronous guard against double-click (before React batches the state update). State provides render-time disabling of the button.
+
+4. **Partial success shows list of failed docs** with Vietnamese labels from `DOC_LABELS`. Optional docs (bangLai) that fail show as individual toasts but don't block the success screen.
+
+5. **Detail view preserves `qrInfo` on partial failure**: If `cccdQR` upload fails, `qrInfo` is NOT cleared. This prevents `canSubmit` from requiring QR re-validation on retry (audit fix MEDIUM-7).
+
+6. **CTV offline banner**: Non-reactive (reads `window._MGT_OFFLINE` at render time). Consistent with admin banner behavior — updates on next re-render after reconnect probe clears the flag. Separate from the reactive admin banner (app.jsx) which uses React state + event listener.
+
+### Audit fixes incorporated
+
+| Audit ID | Fix |
+|----------|-----|
+| HIGH-3 | `mountedRef` guards on all async setState paths |
+| HIGH-4 | `retryBusyRef` for synchronous double-click prevention |
+| MEDIUM-2 | Clone `failedDocs` at retry start to avoid stale closure |
+| MEDIUM-7 | Preserve `qrInfo` when `cccdQR` is in failed docs |
+| LOW-4 | Added CTV offline banner in GuestApp header |
+
+### Deferred (pre-existing, not introduced by Task 7)
+
+- HIGH-1: localStorage draft timing (last keystroke lost on fast close) — pre-existing, not related to success gate.
+- HIGH-2: IndexedDB orphan accumulation — acceptable given iOS 50MB budget; cleanup sweep can be a follow-up.
+- HIGH-5: `_capImage` memory pressure — in data-loader.js, out of Task 7 scope.
+- MEDIUM-1: `GuestAuthedImage` fetch abort — pre-existing, separate fix.
+
+### Alignment with task brief
+
+- Green success screen ONLY shows when ALL required docs uploaded. ✓
+- Partial failure shows WHICH photos failed + retry button. ✓
+- Retry successfully uploads remaining photos. ✓
+- Detail view has same honest-failure behavior. ✓
+- Optional docs (bangLai) failing → still show success with toast. ✓
+- Student record is NOT deleted on partial failure. ✓
+- Retry is idempotent (uploadStudentDoc overwrites). ✓
+- Draft (IndexedDB) NOT cleared until full success. ✓
+
+---
+
 ## Tasks pending (not yet implemented)
 
-| # | Task | Priority | Depends on |
-|---|------|----------|------------|
-| 6 | Silent re-authentication via saved creds | high | — |
-| 7 | Prevent ALL partial success (success gate) | CRITICAL | #2, #5, #6, #8 |
-| 10 | Offline mode audit and fix | high | #6 |
-
-Recommended remaining order: 6 → 10 → 7
+All 10 tasks are now complete.
 
 ---
 
@@ -250,12 +410,12 @@ Recommended remaining order: 6 → 10 → 7
 | `backend/alembic/versions/e7f8a9b0c1d2_...py` | #1 (new) |
 | `backend/app/routers/address.py` | #4 |
 | `backend/app/routers/students.py` | #4 |
-| `frontend/data-loader.js` | #2, #8, #9 |
-| `frontend/screen-guest.jsx` | #2, #3, #4, #5 |
+| `frontend/data-loader.js` | #2, #8, #9, #10 |
+| `frontend/screen-guest.jsx` | #2, #3, #4, #5, #7 |
 | `frontend/native-bridge.js` (mobile/src/) | #3 |
 | `frontend/qr-capturer.js` | #2 |
 | `frontend/modals.jsx` | #2 |
-| `frontend/app.jsx` | #2 |
+| `frontend/app.jsx` | #2, #10 |
 | `frontend/screen-classes.jsx` | #2 |
 | `frontend/screen-org.jsx` | #2 |
 | `frontend/screen-org-vehicles.jsx` | #2 |

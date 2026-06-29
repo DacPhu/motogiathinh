@@ -28,7 +28,7 @@ Entrypoints (local): frontend `:3000` (direct) or `:8080` (top-level nginx). API
 ## Architecture rules
 
 - **Single API surface:** `/api/*`. There is no `/api/v1/*` anymore. The frontend is a static bundle of `.jsx` + `.css` + fonts; the backend serves the JSON shape documented in `motogiathinh2905-devandprod/motogiathinh-design-system-template/project/BACKEND.md`.
-- **Auth:** HttpOnly cookie `mgt_session` (JWT inside, 14-day TTL). No Bearer header; no refresh tokens. `dependencies.get_current_user` reads the cookie. Login (`POST /api/auth/login`) returns `{user}` and sets the cookie. Logout clears it.
+- **Auth:** HttpOnly cookie `mgt_session` (JWT inside, 90-day TTL). No Bearer header; no refresh tokens. `dependencies.get_current_user` reads the cookie. Login (`POST /api/auth/login`) returns `{user}` and sets the cookie. Logout clears it.
 - **Three roles:** `admin` (branch_id NULL), `staff` (single branch_id), and `collaborator` (CTV — lower than staff; `students` create+read only). Admin endpoints depend on `AdminUser`. Staff branch scoping: `scope_to_branch(user)`. CTVs are many-to-many with branches+classes (`user_branch_assignments`/`user_class_assignments`). **Only CTVs** are gated to students in **active** classes (`đang mở`/`đang diễn ra`) via `accessible_class_ids()`+`compute_class_status()`; staff stay plain branch-scoped (all classes). (There IS a `UserPermission` table for staff CRUD grants.) See `docs/HANDOFF-collaborator-role.md`.
 - **Branch IDs on the wire are slugs**, not UUIDs. `branches.slug` (`br-1`, `br-2`, `br-3`) is assigned by the alembic migration in `created_at` order. Wire shapes resolve UUIDs to slugs via `resolve_branch_slug(s)`. Admin's null-branch resolves to the synthetic `admin-all` sentinel.
 - **Wire shape ≠ DB shape.** DB columns stay Vietnamese (`ten_hoc_vien`, `ngay_sinh`, `loai_bang_lai`); each router has a `_to_wire(row)` mapper that renames to English + formats dates as `dd/mm/yyyy[ HH:MM:SS]` + collapses the 8-class license enum to A/A1. Helpers live in `app/utils/dates.py`.
@@ -115,7 +115,7 @@ utils/               — id_generator (HV/BL/GD sequences via Redis INCR), dates
 - **Python 3.14 + hatchling editable install = broken.** Stick to `requirements.txt`.
 - **Postgres 18** changed the data dir layout — volume mounts at `/var/lib/postgresql`.
 - **MinIO bucket** is auto-created on first upload via `storage.py`.
-- **JWT cookie is the only auth.** If a request 401s, the cookie likely expired (14 days) or wasn't sent (CORS / `credentials:'include'` missing). The frontend's `data-loader.js` already sets `credentials:'include'` on every fetch.
+- **JWT cookie is the only auth.** If a request 401s, the cookie likely expired (90 days) or wasn't sent (CORS / `credentials:'include'` missing). The frontend's `data-loader.js` already sets `credentials:'include'` on every fetch.
 - **Branch IDs on the wire are slugs.** Don't pass UUIDs back in mutation requests — accept both, normalize via the `_branch_id_from_slug` helper.
 - **Payment.payment_plan_id is nullable** (alembic `b1c2d3e4f5a6` relaxed it). Sibling contract has no payment_plan concept; new payments leave it NULL.
 - **The OCR parser lives in two places** (`backend/app/core/ocr.py` and `ocr_service/app.py`) — mirror parser changes.

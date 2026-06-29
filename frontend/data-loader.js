@@ -990,4 +990,26 @@
   window.MGT_DATA_READY = Promise.resolve(window.MGT_BOOT_GATE)
     .then(() => boot())
     .catch(err => { console.error('[data-loader] boot failed:', err); throw err; });
+
+  // ── Reconnect detection ────────────────────────────────────────────
+  // When the app boots offline (_MGT_OFFLINE = true), listen for connectivity
+  // changes and re-probe the server. On success, clear the flag so writes
+  // unblock and the banner disappears.
+  let _lastProbe = 0;
+  async function _probeReconnect() {
+    if (!window._MGT_OFFLINE) return;
+    const now = Date.now();
+    if (now - _lastProbe < 5000) return;  // debounce — max once per 5s
+    _lastProbe = now;
+    try {
+      await api('/me');
+      window._MGT_OFFLINE = false;
+      window.dispatchEvent(new Event('mgt:connectivity'));
+      if (window.MGT_TOAST) window.MGT_TOAST('Đã khôi phục kết nối — có thể tải ảnh và lưu dữ liệu.', { ms: 3000 });
+    } catch {}  // still offline — keep the flag
+  }
+  window.addEventListener('online', _probeReconnect);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') _probeReconnect();
+  });
 })();

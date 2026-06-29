@@ -175,6 +175,16 @@ function GuestApp() {
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column",
                   alignItems: "center", background: "var(--ink-1)" }}>
+      {window._MGT_OFFLINE && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 200000,
+          background: "color-mix(in oklab, var(--neon-violet, #a78bfa) 80%, #000)",
+          padding: "7px 16px", textAlign: "center",
+          fontFamily: "var(--font-ui, system-ui)", fontSize: 12, fontWeight: 600, color: "#fff",
+        }}>
+          Không có mạng — đang xem dữ liệu đã lưu. Kết nối internet để cập nhật.
+        </div>
+      )}
       <div style={{
         width: "100%", maxWidth: GUEST_MAX_WIDTH,
         height: "100dvh", minHeight: "100vh", maxHeight: "100dvh", overflow: "hidden",
@@ -322,9 +332,8 @@ function GuestStudentList({ students, onOpen }) {
 }
 
 // --------------------------------------------------------------------
-// Detail — edit Họ tên (read-only from QR), SĐT, hạng bằng, + re-upload
-// the photos. Existing photos show a "đã có" filled state (the wire has
-// no doc URLs yet → no inline preview; backend follow-up).
+// Detail — edit SĐT, hạng bằng, + re-upload photos. Task 7: collect
+// upload results; only show success when ALL required docs uploaded.
 // --------------------------------------------------------------------
 function GuestStudentDetail({ student, onBack }) {
   const D = window.MGT_DATA;
@@ -334,15 +343,23 @@ function GuestStudentDetail({ student, onBack }) {
   const [qrInfo, setQrInfo] = React.useState(null);
   const [qrErr,  setQrErr]  = React.useState(null);
   const [qrBusy, setQrBusy] = React.useState(false);
-  const [busy, setBusy] = React.useState(false);
-  const [err,  setErr]  = React.useState(null);
+  // Task 7: unified result state replaces busy/err/success toast
+  const [result, setResult] = React.useState(null); // null | { status, errMsg, failedDocs }
+  const [retryBusy, setRetryBusy] = React.useState(false);
   const busyRef = React.useRef(false);
+  const retryBusyRef = React.useRef(false);
+  const mountedRef = React.useRef(true);
   const ex = student.docs || {};
+
+  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const fieldsDirty = (phone !== (student.phone || "")) || (licence !== (student.licence || ""));
   const otherPhotosDirty = !!(newFiles.cccd || newFiles.cccdBack || newFiles.the3x4 || newFiles.bangLaiFront || newFiles.bangLaiBack);
   const qrReplaced = !!newFiles.cccdQR;
   const isDirty = fieldsDirty || otherPhotosDirty || qrReplaced;
+
+  // Task 7: check if retry has pending failed uploads
+  const hasPendingUploads = !!(result?.status === 'partial' || result?.status === 'failed') && (result.failedDocs || []).length > 0;
 
   const pickInto = (key, file) => { if (file) { setNewFiles(prev => ({ ...prev, [key]: file })); draftSavePhoto(student.id, key, file); } };
 
@@ -382,31 +399,86 @@ function GuestStudentDetail({ student, onBack }) {
     } finally { setQrBusy(false); }
   };
 
-  const canSubmit = !busy && !qrBusy && isDirty && (!qrReplaced || !!qrInfo?.idNumber);
+  // Task 7: canSubmit allows retry when there are pending uploads
+  const busyOp = busyRef.current || retryBusyRef.current;
+  const canSubmit = !busyOp && !qrBusy && (isDirty || hasPendingUploads) && (!qrReplaced || !!qrInfo?.idNumber);
 
+  // Task 7: submit now collects upload results — never shows success if required docs failed
   const submit = async () => {
-    if (busyRef.current || !canSubmit) return;
+    if (busyRef.current || retryBusyRef.current || !canSubmit) return;
     busyRef.current = true;
     try {
-      setBusy(true); setErr(null);
+      setResult({ status: 'creating' });
+      // 1) Update fields
       const patch = {};
       if (phone   !== (student.phone   || "")) patch.phone   = phone   || null;
       if (licence !== (student.licence || "")) patch.licence = licence || null;
       if (qrReplaced && qrInfo?.idNumber)      patch.idNumber = qrInfo.idNumber;
-      if (qrReplaced && qrInfo?.address)       patch.address  = qrInfo.address;  // converted new address
-      if (qrReplaced && qrInfo?.qrRaw)         patch.cccdQrRaw = qrInfo.qrRaw;   // raw QR payload for export
-      if (Object.keys(patch).length) await D.api.updateStudent(student.id, patch);
-      for (const [key, file] of Object.entries(newFiles)) {
-        if (!file) continue;
-        try { await D.api.uploadStudentDoc(student.id, key, file); }
-        catch (e) { gToast("Tải ảnh thất bại. Kiểm tra mạng rồi bấm 'Lưu thay đổi' lại.", "error"); }
+      if (qrReplaced && qrInfo?.address)       patch.address  = qrInfo.address;
+      if (qrReplaced && qrInfo?.qrRaw)         patch.cccdQrRaw = qrInfo.qrRaw;
+      if (Object.keys(patch).length) {
+        try { await D.api.updateStudent(student.id, patch); }
+        catch (e) { if (!mountedRef.current) return; setResult({ status: 'failed', errMsg: e?.message || 'Có lỗi xảy ra.', failedDocs: [] }); return; }
       }
-      setNewFiles({}); setQrInfo(null);
-      draftClearPhotos(student.id);
-      gToast("Đã lưu thay đổi.", "success");
+      // 2) Upload photos, collect results
+      if (!mountedRef.current) return;
+      setResult({ status: 'uploading' });
+      const entries = Object.entries(newFiles).filter(([, f]) => !!f);
+      if (entries.length === 0) {
+        if (mountedRef.current) { setResult(null); gToast("Đã lưu thay đổi.", "success"); }
+        return;
+      }
+      const results = [];
+      for (const [key, file] of entries) {
+        try { await D.api.uploadStudentDoc(student.id, key, file); results.push({ key, ok: true }); }
+        catch (e) { results.push({ key, ok: false, error: e?.message || 'Thất bại' }); }
+      }
+      if (!mountedRef.current) return;
+      const failedRequired = results.filter(r => !r.ok && CTV_REQUIRED_DOCS.includes(r.key));
+      if (failedRequired.length === 0) {
+        // Full success — clear state
+        setNewFiles({}); setQrInfo(null);
+        draftClearPhotos(student.id);
+        setResult(null);
+        gToast("Đã lưu thay đổi.", "success");
+      } else {
+        // Partial — keep files for retry, show which failed
+        setResult({ status: 'partial', failedDocs: failedRequired });
+      }
     } catch (e) {
-      setErr(e?.message || String(e));
-    } finally { busyRef.current = false; setBusy(false); }
+      if (mountedRef.current) setResult({ status: 'failed', errMsg: e?.message || 'Có lỗi xảy ra.', failedDocs: [] });
+    } finally { busyRef.current = false; }
+  };
+
+  // Task 7: retry only the failed uploads (detail view)
+  const retryFailedUploads = async () => {
+    if (retryBusyRef.current) return;
+    const failedDocs = result?.failedDocs;
+    if (!failedDocs || !failedDocs.length) return;
+    // Clone to avoid stale closure issues
+    const docsToRetry = [...failedDocs];
+    retryBusyRef.current = true;
+    try {
+      setRetryBusy(true);
+      setResult(prev => ({ ...prev, status: 'uploading' }));
+      const retryResults = [];
+      for (const d of docsToRetry) {
+        const file = newFiles[d.key];
+        if (!file) { retryResults.push({ key: d.key, ok: false, error: 'File không còn' }); continue; }
+        try { await D.api.uploadStudentDoc(student.id, d.key, file); retryResults.push({ key: d.key, ok: true }); }
+        catch (e) { retryResults.push({ key: d.key, ok: false, error: e?.message || 'Thất bại' }); }
+      }
+      if (!mountedRef.current) return;
+      const stillFailed = retryResults.filter(r => !r.ok);
+      if (stillFailed.length === 0) {
+        setNewFiles({}); setQrInfo(null); draftClearPhotos(student.id);
+        setResult(null); gToast("Đã tải lại ảnh thành công.", "success");
+      } else {
+        setResult(prev => ({ ...prev, status: 'partial', failedDocs: stillFailed }));
+      }
+    } catch (e) {
+      if (mountedRef.current) setResult(prev => prev ? { ...prev, status: 'partial' } : null);
+    } finally { retryBusyRef.current = false; setRetryBusy(false); }
   };
 
   const cls = D.getClass(student.classId);
@@ -454,17 +526,50 @@ function GuestStudentDetail({ student, onBack }) {
         </div>
       </div>
 
-      {err && <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>{err}</span>}
+      {/* Task 7: partial/failed upload banners */}
+      {result?.status === 'partial' && (
+        <div style={{ padding: "12px 14px", borderRadius: 12, display: "flex", flexDirection: "column", gap: 8,
+                      background: "color-mix(in oklab, var(--neon-amber, #f59e0b) 10%, transparent)",
+                      border: "1px solid color-mix(in oklab, var(--neon-amber, #f59e0b) 40%, transparent)" }}>
+          <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--neon-amber, #f59e0b)" }}>
+            Một số ảnh chưa tải lên được:
+          </span>
+          {(result.failedDocs || []).map(d => (
+            <span key={d.key} style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-2)" }}>
+              {DOC_LABELS[d.key] || d.key}
+            </span>
+          ))}
+          {retryBusy && <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)" }}>Đang tải lại…</span>}
+          {!retryBusy && <button onClick={retryFailedUploads} style={{
+            marginTop: 4, padding: "10px 14px", borderRadius: 10, border: "none", cursor: "pointer",
+            background: "var(--neon-amber, #f59e0b)", color: "#000",
+            fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, width: "100%",
+          }}>Tải lại ảnh còn thiếu</button>}
+        </div>
+      )}
+      {result?.status === 'failed' && (
+        <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)",
+                      padding: "8px 12px", borderRadius: 10,
+                      background: "color-mix(in oklab, var(--neon-pink) 12%, transparent)",
+                      border: "1px solid var(--neon-pink)" }}>
+          {result.errMsg || "Có lỗi xảy ra. Thử lại, hoặc liên hệ quản trị viên."}
+        </div>
+      )}
 
       <button onClick={submit} disabled={!canSubmit} style={{
         padding: "14px 16px", borderRadius: 14, border: "none", cursor: canSubmit ? "pointer" : "not-allowed",
         background: canSubmit ? "var(--neon-cyan)" : "var(--glass-2)", color: canSubmit ? "var(--ink-0)" : "var(--fg-3)",
         boxShadow: canSubmit ? "0 0 0 1px var(--neon-cyan), 0 0 18px var(--neon-cyan-haze)" : "none",
         fontFamily: "var(--font-ui)", fontSize: 14, fontWeight: 600,
-        display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8, opacity: busy ? 0.6 : 1,
+        display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 8,
+        opacity: (result?.status === 'creating' || result?.status === 'uploading') ? 0.6 : 1,
       }}>
         <Icon name="check" size={16}/>
-        {busy ? "Đang lưu…" : !isDirty ? "Không có thay đổi" : (qrReplaced && !qrInfo?.idNumber) ? "Chờ QR hợp lệ" : "Lưu thay đổi"}
+        {result?.status === 'creating' ? "Đang lưu…" :
+         result?.status === 'uploading' ? "Đang tải ảnh…" :
+         hasPendingUploads ? "Lưu thay đổi" :
+         !isDirty ? "Không có thay đổi" :
+         (qrReplaced && !qrInfo?.idNumber) ? "Chờ QR hợp lệ" : "Lưu thay đổi"}
       </button>
     </div>
   );
@@ -484,12 +589,15 @@ function GuestAddStudentModal({ open, onClose }) {
   const [qrInfo, setQrInfo] = React.useState(null);
   const [qrErr,  setQrErr]  = React.useState(null);
   const [qrBusy, setQrBusy] = React.useState(false);
-  const [busy, setBusy] = React.useState(false);
-  const [err,  setErr]  = React.useState(null);
-  const [success, setSuccess] = React.useState(null);
-  const [dupErr, setDupErr] = React.useState(null);  // CCCD đã tồn tại
-  const [showErrors, setShowErrors] = React.useState(false);  // red outlines + tip after a failed THÊM
+  // Task 7: unified result state replaces busy/err/success
+  const [result, setResult] = React.useState(null); // null | { status, errMsg, studentId, name, licence, classCode, failedDocs }
+  const [retryBusy, setRetryBusy] = React.useState(false);
+  const [dupErr, setDupErr] = React.useState(null);
+  const [showErrors, setShowErrors] = React.useState(false);
   const busyRef = React.useRef(false);
+  const retryBusyRef = React.useRef(false);
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const DRAFT_KEY = "mgt_guest_add_draft";
 
@@ -508,7 +616,8 @@ function GuestAddStudentModal({ open, onClose }) {
     if (open && !wasOpen) {
       // Opening — reset transient state, then pre-fill from saved draft.
       setDocFiles({}); setQrErr(null); setQrBusy(false);
-      setBusy(false); setErr(null); setSuccess(null); setDupErr(null); setShowErrors(false); busyRef.current = false;
+      setResult(null); setRetryBusy(false); setDupErr(null); setShowErrors(false);
+      busyRef.current = false; retryBusyRef.current = false;
       let draft = null;
       try { const raw = localStorage.getItem(DRAFT_KEY); if (raw) draft = JSON.parse(raw); } catch {}
       setName(draft?.name || "");
@@ -589,9 +698,8 @@ function GuestAddStudentModal({ open, onClose }) {
   const outErr = (bad) => bad ? { outline: "2px solid var(--neon-pink)", outlineOffset: 2 } : null;
 
   const submit = async () => {
-    if (busyRef.current || busy) return;
+    if (busyRef.current || retryBusyRef.current) return;
     if (qrBusy) { gToast("Đang xử lý mã QR, đợi một chút…", "info"); return; }
-    // THÊM is always clickable: validate on click and flag gaps in red.
     if (dupErr || !isComplete) {
       setShowErrors(true);
       gToast(dupErr ? "CCCD này đã có hồ sơ." : "Còn thiếu thông tin bắt buộc.", "error");
@@ -604,7 +712,7 @@ function GuestAddStudentModal({ open, onClose }) {
     }
     busyRef.current = true;
     try {
-      setBusy(true); setErr(null);
+      setResult({ status: 'creating' });
       const form = {
         name: name.trim(), phone: phone.trim() || null, licence, classId: classId || null,
         idNumber: qrInfo.idNumber,
@@ -618,49 +726,139 @@ function GuestAddStudentModal({ open, onClose }) {
                           bangLaiFront: docFiles.bangLaiFront, bangLaiBack: docFiles.bangLaiBack };
       const docs = { cccd: !!uploadMap.cccd, cccdBack: !!uploadMap.cccdBack, cccdQR: !!uploadMap.cccdQR, the3x4: !!uploadMap.the3x4,
                      bangLaiFront: !!uploadMap.bangLaiFront, bangLaiBack: !!uploadMap.bangLaiBack };
-      const created = await D.api.createStudent({ form, docs, profileComplete: false });
-      // Upload docs SEQUENTIALLY (not Promise.all): concurrent uploads raced the
-      // per-student access check + per-row update → intermittent 403s + lost images
-      // (CCCD front/back failing together, QR separately).
+      let created;
+      try {
+        created = await D.api.createStudent({ form, docs, profileComplete: false });
+      } catch (e) {
+        if (!mountedRef.current) return;
+        const msg = e?.message || String(e);
+        if (e?.code === "duplicate_cccd" || /duplicate/i.test(msg)) {
+          setDupErr("CCCD này đã có hồ sơ trong hệ thống.");
+        }
+        setResult({ status: 'failed', errMsg: msg, studentId: null, name: form.name, licence: form.licence,
+                    classCode: D.getClass(form.classId)?.code || "—", failedDocs: [] });
+        return;
+      }
+      // Student created — drop text draft (student data is on server now).
+      try { localStorage.removeItem(DRAFT_KEY); } catch {}
+      // Task 7: upload docs and COLLECT results — never swallow failures.
+      if (!mountedRef.current) return;
+      setResult({ status: 'uploading', studentId: created.id, name: form.name, licence: form.licence,
+                  classCode: D.getClass(form.classId)?.code || "—", failedDocs: [] });
+      const results = [];
       for (const [key, file] of Object.entries(uploadMap)) {
         if (!file) continue;
-        try { await D.api.uploadStudentDoc(created.id, key, file); }
-        catch (e) { gToast("Tải ảnh thất bại. Kiểm tra mạng rồi thử lại.", "error"); }
+        try { await D.api.uploadStudentDoc(created.id, key, file); results.push({ key, ok: true }); }
+        catch (e) { results.push({ key, ok: false, error: e?.message || 'Thất bại' }); }
       }
-      // Successful create — drop the saved draft.
-      try { localStorage.removeItem(DRAFT_KEY); } catch {}
-      draftClearPhotos('new');
-      setSuccess({ name: form.name, licence: form.licence, classCode: D.getClass(form.classId)?.code || "—" });
-    } catch (e) {
-      const msg = e?.message || String(e);
-      if (e?.code === "duplicate_cccd" || /duplicate/i.test(msg)) {
-        setDupErr("CCCD này đã có hồ sơ trong hệ thống.");
+      if (!mountedRef.current) return;
+      const failedRequired = results.filter(r => !r.ok && CTV_REQUIRED_DOCS.includes(r.key));
+      if (failedRequired.length === 0) {
+        // Full success — ALL required docs uploaded
+        draftClearPhotos('new');
+        setResult({ status: 'full', studentId: created.id, name: form.name, licence: form.licence,
+                    classCode: D.getClass(form.classId)?.code || "—", failedDocs: [] });
       } else {
-        setErr(msg);
+        // Partial success — student exists but required docs missing. Keep draft for retry.
+        setResult({ status: 'partial', studentId: created.id, name: form.name, licence: form.licence,
+                    classCode: D.getClass(form.classId)?.code || "—", failedDocs: failedRequired });
       }
-    } finally { busyRef.current = false; setBusy(false); }
+    } catch (e) {
+      if (!mountedRef.current) return;
+      setResult({ status: 'failed', errMsg: e?.message || 'Có lỗi xảy ra.', studentId: null,
+                  name: name.trim(), licence, classCode: D.getClass(classId)?.code || "—", failedDocs: [] });
+    } finally { busyRef.current = false; }
   };
+
+  // Task 7: retry only the failed uploads (add modal)
+  const retryFailedUploads = async () => {
+    if (retryBusyRef.current || !result?.studentId) return;
+    const failedDocs = result?.failedDocs;
+    if (!failedDocs || !failedDocs.length) return;
+    const docsToRetry = [...failedDocs]; // clone to avoid stale closure
+    retryBusyRef.current = true;
+    try {
+      setRetryBusy(true);
+      setResult(prev => prev ? { ...prev, status: 'uploading' } : prev);
+      const retryResults = [];
+      for (const d of docsToRetry) {
+        const file = docFiles[d.key];
+        if (!file) { retryResults.push({ key: d.key, ok: false, error: 'File không còn' }); continue; }
+        try { await D.api.uploadStudentDoc(result.studentId, d.key, file); retryResults.push({ key: d.key, ok: true }); }
+        catch (e) { retryResults.push({ key: d.key, ok: false, error: e?.message || 'Thất bại' }); }
+      }
+      if (!mountedRef.current) return;
+      const stillFailed = retryResults.filter(r => !r.ok);
+      if (stillFailed.length === 0) {
+        draftClearPhotos('new');
+        setResult(prev => prev ? { ...prev, status: 'full', failedDocs: [] } : prev);
+      } else {
+        setResult(prev => prev ? { ...prev, status: 'partial', failedDocs: stillFailed } : prev);
+      }
+    } catch (e) {
+      if (mountedRef.current) setResult(prev => prev ? { ...prev, status: 'partial' } : prev);
+    } finally { retryBusyRef.current = false; setRetryBusy(false); }
+  };
+
+  // Task 7: derived flags for UI
+  const isOperating = result?.status === 'creating' || result?.status === 'uploading';
+  const hasPendingUploads = (result?.status === 'partial' || result?.status === 'failed') && (result.failedDocs || []).length > 0;
+
+  // Task 7: partial-success banner for the add modal
+  const PartialSuccessBanner = result?.status === 'partial' ? (
+    <div style={{ padding: "16px", borderRadius: 14, display: "flex", flexDirection: "column", gap: 12,
+                  background: "color-mix(in oklab, var(--neon-lime) 8%, transparent)",
+                  border: "1px solid color-mix(in oklab, var(--neon-lime) 30%, transparent)" }}>
+      <span style={{ fontFamily: "var(--font-ui)", fontSize: 14, fontWeight: 600, color: "var(--neon-lime)" }}>
+        Hồ sơ đã tạo thành công!
+      </span>
+      <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--fg-2)" }}>
+        Một số ảnh chưa tải lên được:
+      </span>
+      {(result.failedDocs || []).map(d => (
+        <span key={d.key} style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)" }}>
+          {DOC_LABELS[d.key] || d.key}
+        </span>
+      ))}
+      {retryBusy && <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)" }}>Đang tải lại…</span>}
+      {!retryBusy && <button onClick={retryFailedUploads} style={{
+        marginTop: 4, padding: "12px 16px", borderRadius: 12, border: "none", cursor: "pointer",
+        background: "var(--neon-cyan)", color: "var(--ink-0)",
+        fontFamily: "var(--font-ui)", fontSize: 14, fontWeight: 600, width: "100%",
+      }}>Tải lại ảnh còn thiếu</button>}
+    </div>
+  ) : null;
 
   return (
     <Modal open={open} onClose={onClose} width={GUEST_MAX_WIDTH}
-           footer={success ? (
+           footer={result?.status === 'full' ? (
+             <Button variant="primary" onClick={onClose} icon="x"
+                     style={{ width: "100%", justifyContent: "center", padding: "16px", fontSize: 15 }}>Đóng</Button>
+           ) : result?.status === 'partial' ? (
              <Button variant="primary" onClick={onClose} icon="x"
                      style={{ width: "100%", justifyContent: "center", padding: "16px", fontSize: 15 }}>Đóng</Button>
            ) : (
-             // Bigger, full-width tap targets (no header X) — easier for older users.
              <div style={{ display: "flex", gap: 10 }}>
                <Button variant="ghost" onClick={onClose}
                        style={{ flex: 1, justifyContent: "center", padding: "16px", fontSize: 15 }}>HỦY</Button>
-               <Button variant="primary" onClick={submit} disabled={busy}
-                       style={{ flex: 1, justifyContent: "center", padding: "16px", fontSize: 15 }}>{busy ? "…" : "THÊM"}</Button>
+               <Button variant="primary" onClick={submit} disabled={isOperating || retryBusy}
+                       style={{ flex: 1, justifyContent: "center", padding: "16px", fontSize: 15 }}>
+                 {result?.status === 'creating' ? "Đang lưu…" : result?.status === 'uploading' ? "Đang tải ảnh…" : "THÊM"}
+               </Button>
              </div>
            )}>
-      {success ? <GuestSuccessView info={success}/> : (
+      {result?.status === 'full' ? <GuestSuccessView info={result}/> : result?.status === 'partial' ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          {err && (
+          {PartialSuccessBanner}
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {result?.status === 'failed' && (
             <div style={{ padding: "8px 12px", borderRadius: 10, fontFamily: "var(--font-mono)", fontSize: 11,
                           background: "color-mix(in oklab, var(--neon-pink) 12%, transparent)",
-                          color: "var(--neon-pink)", border: "1px solid var(--neon-pink)" }}>{err}</div>
+                          color: "var(--neon-pink)", border: "1px solid var(--neon-pink)" }}>
+              {result.errMsg || "Có lỗi xảy ra. Thử lại, hoặc liên hệ quản trị viên."}
+            </div>
           )}
           <Select label="Lớp" value={classId} onChange={setClassId} placeholder="Chọn lớp" options={classOpts}
                   success={!missing.classId} invalid={showErrors && missing.classId}/>

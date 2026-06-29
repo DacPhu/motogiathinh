@@ -370,107 +370,13 @@ store Blobs and has no strict size limits):
 
 ---
 
-## TASK 6 — Silent re-authentication (no page reload on 401)
-**Priority:** high (data preservation) | **Risk:** medium | **Scope:** frontend
+## TASK 6 — Silent re-authentication (DROPPED)
+**Status:** Dropped — not necessary for this use case.
 
-### Context
-The mobile app uses Bearer tokens (JWT, 14-day TTL). When a token expires mid-session:
-- `api()` (data-loader.js:52) does `window.location.reload()` — destroys all React state
-  including picked photos, modal state, scroll position.
-- `_upload` (data-loader.js:769) doesn't handle 401 at all — just throws
-  `"upload_failed: 401"`.
-- The native app stores login credentials in Capacitor Preferences (native-bridge.js:32-33).
-  These are available for silent re-login.
-
-### Problem
-A 401 during the add-student flow wipes the modal and every photo the user picked.
-On a long session (CTV working all day), this is a realistic scenario.
-
-### Files
-- `frontend/data-loader.js` — `api()` (line 42-58), `_upload` (line 764-769)
-- `mobile/src/native-bridge.js` — `MGT_CREDS` (line 42), `MGT_SAVE_TOKEN` (line 26)
-
-### Plan
-1. Add a module-level `_reauth()` function in data-loader.js:
-   ```js
-   let _reauthing = null;  // singleton — don't fire multiple re-auths
-   async function _reauth() {
-     if (_reauthing) return _reauthing;
-     _reauthing = (async () => {
-       try {
-         const creds = window.MGT_CREDS;
-         if (!creds || !creds.email || !creds.password) return false;
-         const res = await fetch(API + '/auth/login', {
-           method: 'POST',
-           headers: { 'Content-Type': 'application/json' },
-           body: JSON.stringify({ email: creds.email, password: creds.password }),
-         });
-         if (!res.ok) return false;
-         const out = await res.json();
-         if (out && out.token) {
-           window.MGT_TOKEN = out.token;
-           try { window.MGT_SAVE_TOKEN && await window.MGT_SAVE_TOKEN(out.token); } catch {}
-           return true;
-         }
-         return false;
-       } catch { return false; }
-       finally { _reauthing = null; }
-     })();
-     return _reauthing;
-   }
-   ```
-
-2. In `api()` (line 52): replace the hard reload:
-   ```js
-   // OLD: if (res.status === 401 && path !== '/me') { window.location.reload(); ... }
-   // NEW:
-   if (res.status === 401 && path !== '/me') {
-     if (await _reauth()) {
-       // Retry the original request once with the new token
-       return api(path, opts);  // recursive — but guarded by one-shot via _reauth
-     }
-     // Re-auth failed — this is a guest/CTV with no saved creds. Show login overlay.
-     window.location.reload();
-     throw new Error('auth_required');
-   }
-   ```
-   **IMPORTANT:** Add a recursion guard — track `_retriedPaths` or a boolean flag so
-   `api()` doesn't infinitely retry after re-auth succeeds but the retry also 401s.
-
-3. In `_upload` (line 764): add the same 401 handling:
-   ```js
-   if (res.status === 401) {
-     if (await _reauth()) {
-       // Retry the upload with new token
-       const fd2 = new FormData(); fd2.append('file', file);
-       const res2 = await fetch(API + path, { method: 'POST', credentials: 'include',
-         headers: window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {},
-         body: fd2 });
-       if (!res2.ok) throw new Error(_humanError(new Error('upload_failed:' + res2.status), 'upload'));
-       return res2.json();
-     }
-     throw new Error(_humanError(new Error('auth_expired'), 'auth'));
-   }
-   ```
-
-4. **NO reload during the add/edit flow.** The key invariant: if `_reauth()` succeeds,
-   React state is preserved — the modal stays open, photos stay picked, the user
-   doesn't notice anything happened.
-
-### Acceptance criteria
-- Token expiry during add-student: re-auth happens silently, photos survive, upload
-  completes normally.
-- Token expiry during edit-student: same — photos survive, save completes.
-- If re-auth fails (no saved creds): graceful fallback to reload (web path unchanged).
-- No infinite retry loops (one re-auth attempt per request).
-
-### Gotchas
-- **Web users (no native bridge) have no saved creds.** `_reauth()` returns false,
-  and the existing reload behavior fires. This is correct — web users log in via
-  the login overlay after reload.
-- The `_reauth` singleton must clear on completion so subsequent 401s (different token
-  expiry) trigger a fresh re-auth.
-- Don't re-auth on the `/me` endpoint itself (already guarded by `path !== '/me'`).
+CTVs are IT-managed. Credentials persist indefinitely via native-bridge.js Preferences.
+If JWT expires or user accidentally logs out, the existing path works: 401 → reload →
+prefilled login screen → one tap. IndexedDB (Task 5) preserves photos across reload.
+Silent re-auth adds complexity for zero practical benefit.
 
 ---
 
@@ -829,11 +735,11 @@ earlier tasks being done first:
 5. TASK 8  — Retry with backoff           (benefits from Task 9's retryable flag)
 6. TASK 4  — Address conversion on backend (medium, self-contained)
 7. TASK 5  — Draft persistence            (no deps on upload fixes, but synergy)
-8. TASK 6  — Silent re-auth               (benefits from Task 2's error mapping)
-9. TASK 10 — Offline mode audit           (benefits from Task 6's _reauth pattern)
-10. TASK 7 — Success gate                 (the capstone — depends on #2, #5, #6, #8)
+8. TASK 6  — [DROPPED] Silent re-auth     (not needed — existing prefilled login is sufficient)
+9. TASK 10 — Offline mode audit           (standalone, reactive banner + reconnect detection)
+10. TASK 7 — [COMPLETE] Success gate       (the capstone — depends on #2, #5, #8)
 ```
 
-**Deploy cadence:** Tasks 1-4 can be deployed immediately (backend + frontend).
-Tasks 5-6 need frontend rebuild only. Tasks 7-10 benefit from being deployed together
+**Deploy cadence:** Tasks 1-5 can be deployed immediately (backend + frontend).
+Task 10 is frontend-only. Task 7 benefits from being deployed with Task 10
 as a "reliability batch."

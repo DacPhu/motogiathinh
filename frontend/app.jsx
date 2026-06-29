@@ -307,11 +307,17 @@ function ReportChoiceModal({ open, onClose }) {
 function Boot() {
   const [ready, setReady] = React.useState(!!window.MGT_DATA);
   const [error, setError] = React.useState(null);
+  const [offline, setOffline] = React.useState(!!window._MGT_OFFLINE);
   React.useEffect(() => {
     if (ready) return;
     if (!window.MGT_DATA_READY) { setError(new Error("MGT_DATA_READY not found — data-loader.js failed to register")); return; }
     window.MGT_DATA_READY.then(() => setReady(true)).catch(setError);
   }, []);   // eslint-disable-line
+  React.useEffect(() => {
+    const fn = () => setOffline(!!window._MGT_OFFLINE);
+    window.addEventListener('mgt:connectivity', fn);
+    return () => window.removeEventListener('mgt:connectivity', fn);
+  }, []);
   if (error) {
     return (
       <div className="mgt-canvas" style={{
@@ -334,7 +340,7 @@ function Boot() {
   }
   return (
     <>
-      {window._MGT_OFFLINE && (
+      {offline && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, zIndex: 200000,
           background: "color-mix(in oklab, var(--neon-violet, #a78bfa) 80%, #000)",
