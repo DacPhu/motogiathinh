@@ -143,8 +143,8 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
              title="Tải ứng dụng" width={380} footer={null}>
         <div style={{ display: "flex", gap: 10, paddingBottom: 4 }}>
           {[
-            { key: "ios",     label: "iOS",     color: "var(--neon-cyan)", url: "https://motogiathinh.centersai.com/downloads/MotoGiaThinhCTV-unsigned.ipa" },
-            { key: "android", label: "Android", color: "var(--neon-lime)", url: "https://motogiathinh.centersai.com/downloads/app-debug.apk" },
+            { key: "ios",     label: "iOS",     color: "var(--neon-cyan)", url: "https://motogiathinh.centersai.com/downloads/MOTOGIATHINH%20CTV%202906.ipa" },
+            { key: "android", label: "Android", color: "var(--neon-lime)", url: "https://motogiathinh.centersai.com/downloads/MOTOGIATHINH%20CTV%202906.apk" },
           ].map(({ key, label, color, url }) => {
             const copied = copiedLink === key;
             return (
