@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from io import BytesIO
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
 from reportlab.lib import colors as rl_colors
@@ -20,6 +20,7 @@ from reportlab.lib.styles import ParagraphStyle
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import select
 
+from app.core.cache import CacheKeys, cache
 from app.dependencies import CurrentUser, DB
 from app.models.class_model import Class, ClassEnrollment
 from app.models.enums import RoleName
@@ -301,3 +302,104 @@ async def data_xlsx(current_user: CurrentUser, db: DB):
     buf = BytesIO()
     wb.save(buf)
     return _xlsx_resp(buf, f"baocao-{now_dt.strftime('%Y%m%d')}.xlsx")
+
+
+# ─── CTV competition (xlsx + json) ───────────────────────────────────────────
+def _resolve_month_year(month, year) -> tuple[int, int]:
+    """Resolve the effective (m, y), defaulting to the current calendar month.
+
+    Cheap (no DB): lets callers build a cache key from the RESOLVED m,y before
+    deciding hit/miss, so the default-month case caches under its real key.
+    """
+    now_dt = datetime.now(timezone.utc)
+    return (month or now_dt.month, year or now_dt.year)
+
+
+async def _load_ctv_ctx(db, month, year):
+    """Shared loader for the CTV-competition endpoints.
+
+    Returns (m, y, students, branch_map, user_map, ctv_ids). Defaults month/year
+    to the current calendar month. Mirrors data_xlsx's load + lookup pattern.
+    """
+    from app.models.branch import Branch
+
+    m, y = _resolve_month_year(month, year)
+
+    students = (await db.execute(
+        select(Student).where(Student.deleted_at.is_(None)).order_by(Student.created_at.desc())
+    )).scalars().all()
+    branches  = (await db.execute(select(Branch))).scalars().all()
+    all_users = (await db.execute(select(User))).scalars().all()
+
+    branch_map = {b.id: b.ten_chi_nhanh for b in branches}
+    user_map   = {u.id: u for u in all_users}
+    ctv_ids    = {u.id for u in all_users
+                  if u.role == RoleName.collaborator and u.is_active and not u.deleted_at}
+    return m, y, students, branch_map, user_map, ctv_ids
+
+
+@router.get("/ctv-competition.xlsx")
+async def ctv_competition_xlsx(current_user: CurrentUser, db: DB,
+                               month: int | None = None, year: int | None = None):
+    if current_user.role not in (RoleName.admin, RoleName.staff):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="staff_only")
+
+    m, y, students, branch_map, user_map, ctv_ids = await _load_ctv_ctx(db, month, year)
+
+    wb = Workbook()
+    wb.active.title = rx._safe_title(f"CTV tháng {m}-{y}")
+    rx.ctv_students_sheet(wb.active, m, y, students, branch_map, user_map, ctv_ids)
+    rx.ctv_competition_sheet(wb.create_sheet(rx._safe_title("Bảng vàng CTV")),
+                             m, y, students, branch_map, user_map, ctv_ids)
+    rx.ctv_podium_sheet(wb.create_sheet(rx._safe_title("Bảng vàng CTV đẹp")),
+                        m, y, students, branch_map, user_map, ctv_ids)
+
+    buf = BytesIO()
+    wb.save(buf)
+    return _xlsx_resp(buf, f"thi-dua-ctv-{m:02d}-{y}.xlsx")
+
+
+@router.get("/ctv-competition.json")
+async def ctv_competition_json(current_user: CurrentUser, db: DB,
+                               month: int | None = None, year: int | None = None,
+                               fresh: bool = False):
+    if current_user.role not in (RoleName.admin, RoleName.staff):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="staff_only")
+
+    m, y = _resolve_month_year(month, year)
+    key = CacheKeys.CTV_COMPETITION.format(year=y, month=m)
+
+    if not fresh:
+        try:
+            hit = await cache.get(key)
+        except Exception:
+            hit = None
+        if hit is not None:
+            return {**hit, "cached": True}
+
+    _, _, students, branch_map, user_map, ctv_ids = await _load_ctv_ctx(db, m, y)
+    rows, ctv_count, ctv_rank = rx.compute_ctv_ranking(students, ctv_ids, m, y)
+
+    ordered = [uid for uid, _ in sorted(ctv_rank.items(), key=lambda x: x[1])]
+
+    def _entry(uid):
+        staff = user_map.get(uid)
+        return {
+            "rank": ctv_rank[uid],
+            "name": (staff.full_name or staff.email) if staff else "",
+            "branch": rx._ctv_branch(uid, rows, user_map, branch_map),
+            "count": ctv_count.get(uid, 0),
+        }
+
+    payload = {
+        "month": m, "year": y, "monthLabel": f"Tháng {m}/{y}",
+        "podium": [_entry(uid) for uid in ordered[:3]],
+        "rest":   [_entry(uid) for uid in ordered[3:]],
+        "totalCtv": len(ordered),
+        "totalProfiles": sum(ctv_count.values()),
+    }
+    try:
+        await cache.set(key, payload, ttl=300)
+    except Exception:
+        pass
+    return {**payload, "cached": False}

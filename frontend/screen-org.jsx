@@ -331,6 +331,11 @@ function AccountsTab() {
   const [confirmDeleteId, setConfirmDeleteId] = React.useState(null);
   const canCreate = D.can("accounts", "create");
   const canUpdate = D.can("accounts", "update");
+  // "Bảng vàng CTV" launcher — admin/staff only. Collaborators never reach
+  // this screen (AppRoot excludes them); the role check mirrors app.jsx's
+  // isCtv idiom as belt-and-suspenders.
+  const role = D.currentUser.role;
+  const isCtv = role === "collaborator" || role === "guest";
   // No placeholder entry — "" is not an accepted value server-side, and
   // EditRecordModal/RecordCreatorModal seed selects from options[0].id so
   // the first real branch is the default.
@@ -367,6 +372,7 @@ function AccountsTab() {
       <div style={{ padding: "14px 22px", borderBottom: "1px solid var(--ink-4)", display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.16em", textTransform: "uppercase" }}>{D.accounts.length} tài khoản</span>
         <div style={{ flex: 1 }}></div>
+        {!isCtv && <CtvCompetitionLauncher/>}
         {canCreate && <Button variant="primary" size="sm" icon="plus" onClick={() => setOpen(true)}>Tạo tài khoản</Button>}
       </div>
       <RecordCreatorModal open={open} onClose={() => setOpen(false)}
@@ -1016,7 +1022,7 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
            primaryDisabled={busy}
            footerStart={err ? (
              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>
-               Lỗi: {err}
+               {err}
              </span>
            ) : null}
            width={560}>
@@ -1107,7 +1113,7 @@ function PasswordResetModal({ open, onClose, account, onSubmit }) {
            primaryDisabled={busy || !pwOk(pw)}
            footerStart={err ? (
              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>
-               Lỗi: {err}
+               {err}
              </span>
            ) : null}>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1150,6 +1156,84 @@ function ConfirmDialog({ open, onClose, title, message, primaryLabel, onConfirm 
 }
 
 // --------------------------------------------------------------------
+// CtvCompetitionLauncher — compact header pill (rendered inside the
+// AccountsTab header row, left of "Tạo tài khoản") that opens the
+// "Bảng vàng CTV" award dialog (top-3 collaborators of the month).
+// Admin/staff only — gated by AccountsTab (collaborators never reach it).
+// Matches the size="sm" Button vocabulary (height/padding/radius/font)
+// but tinted AMBER (the champion colour) and styled secondary/glass so
+// it pairs with — yet stays distinct from — the primary create button.
+// The Dialog itself is a Modal that portals on its own.
+// --------------------------------------------------------------------
+function CtvCompetitionLauncher() {
+  const [compOpen, setCompOpen]       = React.useState(false);
+  const [compData, setCompData]       = React.useState(null);
+  const [compLoading, setCompLoading] = React.useState(false);
+  const [hover, setHover]             = React.useState(false);
+
+  const openComp = async () => {
+    setCompOpen(true);
+    setCompLoading(true);
+    setCompData(null);
+    try {
+      const out = await window.MGT_DATA.api.fetchCtvCompetition();
+      setCompData(out);
+    } catch (e) {
+      reportWriteError(e, "Lỗi tải bảng vàng CTV");
+      setCompOpen(false);
+    } finally {
+      setCompLoading(false);
+    }
+  };
+
+  // Force a server recompute (bypasses the 5-min cache via `fresh`).
+  // Toggles compLoading so the dialog replays its entrance animation,
+  // then swaps in the fresh data. Same try/catch/report pattern as open.
+  const refreshComp = async () => {
+    setCompLoading(true);
+    try {
+      const out = await window.MGT_DATA.api.fetchCtvCompetition(undefined, undefined, { fresh: true });
+      setCompData(out);
+    } catch (e) {
+      reportWriteError(e, "Lỗi tải bảng vàng CTV");
+    } finally {
+      setCompLoading(false);
+    }
+  };
+
+  return (
+    <>
+      <button onClick={openComp}
+        onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+        aria-label="Bảng vàng CTV"
+        style={{
+          display: "inline-flex", alignItems: "center", gap: 8,
+          padding: "7px 12px", borderRadius: 10, cursor: "pointer",
+          fontFamily: "var(--font-ui)", fontWeight: 600, fontSize: 12,
+          lineHeight: 1, letterSpacing: "0.005em", whiteSpace: "nowrap",
+          background: "var(--glass-2)", color: "var(--fg-1)",
+          border: "1px solid color-mix(in oklab, var(--neon-amber) 42%, transparent)",
+          backdropFilter: "var(--glass-blur-soft)", WebkitBackdropFilter: "var(--glass-blur-soft)",
+          boxShadow: hover
+            ? "0 0 0 1px color-mix(in oklab, var(--neon-amber) 30%, transparent), 0 0 16px var(--neon-amber-glow)"
+            : "0 0 8px var(--neon-amber-haze)",
+          transition: "all 140ms var(--ease-out)",
+        }}>
+        <Icon name="graduation" size={13} color="var(--neon-amber)"/>
+        <span>Bảng vàng CTV</span>
+      </button>
+      <CtvCompetitionDialog
+        open={compOpen}
+        onClose={() => setCompOpen(false)}
+        data={compData}
+        loading={compLoading}
+        onRefresh={refreshComp}
+        onDownload={() => window.MGT_DATA.api.downloadCtvCompetitionXlsx()}/>
+    </>
+  );
+}
+
+// --------------------------------------------------------------------
 // Helper — unified error toast for write failures. Surfaces a friendly
 // Vietnamese message; falls back to the raw error.message for unknown
 // codes. Called by every MoreMenu action.
@@ -1168,7 +1252,7 @@ function reportWriteError(e, fallback = "Lỗi") {
   else if (/in_use|in use|FK|FOREIGN/i.test(msg)) friendly = "Không thể xóa: bản ghi đang được tham chiếu.";
   else if (/password_(too_short|too|weak|needs_)/.test(msg)) friendly = "Mật khẩu không hợp lệ.";
   else if (/forbidden|admin_only|requireAdmin/i.test(msg)) friendly = "Chỉ admin mới thực hiện được thao tác này.";
-  else friendly = fallback + ": " + msg;
+  else friendly = fallback + ". Thử lại, hoặc liên hệ quản trị viên.";
   if (window.MGT_TOAST) window.MGT_TOAST(friendly);
   else alert(friendly);
 }
@@ -1177,6 +1261,7 @@ Object.assign(window, {
   OrganizationScreen, BranchesTab, AccountsTab, FeesTab, PromosTab,
   TeachersTab, ActivityTab, RecordCreatorModal,
   MoreMenu, EditRecordModal, PasswordResetModal, ConfirmDialog,
+  CtvCompetitionLauncher,
 });
 
 // --------------------------------------------------------------------
@@ -1237,7 +1322,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
            primaryDisabled={busy}
            footerStart={err ? (
              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>
-               Lỗi: {err}
+               {err}
              </span>
            ) : null}
            width={560}>

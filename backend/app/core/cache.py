@@ -31,6 +31,7 @@ class CacheKeys:
     DASHBOARD_STATS = "report:dashboard:{branch_id}"
     REVENUE_MONTHLY = "report:revenue:{branch_id}:{year}:{month}"
     STAFF_COLLECTION = "report:staffcollection:{branch_id}:{date}"
+    CTV_COMPETITION = "ctv_competition:{year}:{month}"
     # Scheduling conflict
     INSTRUCTOR_BUSY = "sched:instructor:{id}:{date}"
     VEHICLE_BUSY = "sched:vehicle:{id}:{date}"
