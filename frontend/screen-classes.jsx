@@ -453,7 +453,7 @@ function ClassEditModal({ open, onClose, cls, currentStatus, onSaveStatus }) {
            primaryDisabled={busy}
            footerStart={err ? (
              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>
-               Lỗi: {err}
+               {err}
              </span>
            ) : null}
            width={520}>

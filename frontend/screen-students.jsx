@@ -409,7 +409,7 @@ function StudentInfoTab({ s, cls, staff, branch, feePlan, promo, docs, setDocs, 
                           // Persist on blur so notes survive tab-switch / reload.
                           // Skip the round-trip if nothing actually changed.
                           if ((notes || "") !== (s.notes || "")) {
-                            D.api.updateStudent(s.id, { notes }).catch(err => alert("Lỗi lưu ghi chú: " + err.message));
+                            D.api.updateStudent(s.id, { notes }).catch(err => alert("Không thể lưu ghi chú. Kiểm tra mạng rồi thử lại."));
                           }
                         }}/>
             </div>
@@ -432,7 +432,7 @@ function StudentInfoTab({ s, cls, staff, branch, feePlan, promo, docs, setDocs, 
                          setDocs(prev => ({ ...prev, [k]: true }));
                          if (file) {
                            D.api.uploadStudentDoc(s.id, k, file)
-                             .catch(err => window.MGT_TOAST && window.MGT_TOAST("Lỗi tải tài liệu: " + err.message));
+                             .catch(err => window.MGT_TOAST && window.MGT_TOAST("Không thể tải ảnh lên. Kiểm tra mạng rồi thử lại."));
                          }
                        }}
                        onClear={(k) => {
@@ -442,7 +442,7 @@ function StudentInfoTab({ s, cls, staff, branch, feePlan, promo, docs, setDocs, 
                          setDocs(prev => ({ ...prev, [k]: false }));
                          D.api.deleteStudentDoc(s.id, k).catch(err => {
                            setDocs(prev => ({ ...prev, [k]: true }));
-                           window.MGT_TOAST && window.MGT_TOAST("Lỗi xóa tài liệu: " + err.message);
+                           window.MGT_TOAST && window.MGT_TOAST("Không thể xóa ảnh. Kiểm tra mạng rồi thử lại.");
                          });
                        }}/>
             ))}

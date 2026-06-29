@@ -170,8 +170,8 @@
         };
 
         (async () => {
-          if (!this.supported()) { hint.textContent = 'Camera cần HTTPS — hãy dùng "Chọn từ thư viện".'; return; }
-          if (!ZX) { hint.textContent = 'Không tải được bộ giải mã QR.'; return; }
+          if (!this.supported()) { hint.textContent = 'Camera cần kết nối an toàn (HTTPS). Bấm "Chọn từ thư viện" để chọn ảnh QR.'; return; }
+          if (!ZX) { hint.textContent = 'Không tải được phần mềm quét QR. Kiểm tra mạng rồi mở lại trang.'; return; }
           try {
             const hints = new Map();
             hints.set(ZX.DecodeHintType.TRY_HARDER, true);
@@ -180,7 +180,7 @@
             const constraints = { video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } }, audio: false };
             await reader.decodeFromConstraints(constraints, video, (result) => onResult(result));
           } catch (e) {
-            hint.textContent = 'Không mở được camera: ' + (e && e.message ? e.message : e);
+            hint.textContent = 'Không mở được camera. Kiểm tra quyền camera trong cài đặt, rồi thử lại. Hoặc bấm "Chọn từ thư viện" để chọn ảnh QR.';
           }
         })();
       });

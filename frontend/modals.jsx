@@ -70,10 +70,10 @@ function AddStudentModal({ open, onClose, onSave }) {
           ? { kind: "ok", msg: `QR đã điền ${applied.length} trường` }
           : { kind: "warn", msg: `QR đã điền ${applied.length} trường — địa chỉ chưa chuyển đổi, kiểm tra lại` });
       } else {
-        setQrToast({ kind: "warn", msg: "Không đọc được mã QR — chụp lại ảnh rõ mã QR hơn." });
+        setQrToast({ kind: "warn", msg: "Không đọc được mã QR. Chụp lại ảnh rõ nét hơn, đảm bảo mã QR rõ ràng và đầy đủ." });
       }
     } catch (e) {
-      setQrToast({ kind: "err", msg: "Quét QR thất bại: " + (e.message || e) });
+      setQrToast({ kind: "err", msg: "Không thể quét mã QR. Chụp lại ảnh rõ hơn, hoặc chọn ảnh khác từ thư viện." });
     } finally {
       setQrBusy(false);
       setTimeout(() => setQrToast(null), 4500);
@@ -346,7 +346,7 @@ function AddPaymentModal({ open, onClose, onSave, defaultStudentId, defaultAmoun
            primaryDisabled={busy || !form.studentId || !amount || !form.method || !form.bienLaiId}
            footerStart={err ? (
              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>
-               Lỗi: {err}
+               {err}
              </span>
            ) : isOverpayment ? (
              <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-amber)" }}
@@ -567,7 +567,7 @@ function AddClassModal({ open, onClose, onSave }) {
            primaryDisabled={busy || !form.code || !form.branchId}
            footerStart={err ? (
              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>
-               Lỗi: {err}
+               {err}
              </span>
            ) : null}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>

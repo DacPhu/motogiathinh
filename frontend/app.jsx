@@ -27,9 +27,9 @@ class ScreenErrorBoundary extends React.Component {
           padding: 40, display: "flex", flexDirection: "column", gap: 12,
           alignItems: "flex-start",
         }}>
-          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--neon-pink)" }}>Lỗi hiển thị màn hình</span>
+          <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--neon-pink)" }}>Lỗi hiển thị</span>
           <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--fg-2)", maxWidth: 640 }}>
-            {String(this.state.error?.message || this.state.error)}
+            Có lỗi xảy ra khi hiển thị màn hình này. Bấm "Thử lại" hoặc quay lại sau.
           </span>
           <button onClick={this.retry} style={{
             marginTop: 4, padding: "8px 14px", borderRadius: 10, cursor: "pointer",
@@ -221,8 +221,8 @@ function AppRoot() {
                            }
                          } catch (e) {
                            // Surface the create failure as a toast (was alert).
-                           if (window.MGT_TOAST) window.MGT_TOAST("Lỗi tạo học viên: " + e.message);
-                           else alert("Lỗi: " + e.message);
+                           if (window.MGT_TOAST) window.MGT_TOAST("Không thể tạo học viên. Kiểm tra lại thông tin rồi thử lại.");
+                           else alert("Không thể tạo học viên. Kiểm tra lại thông tin rồi thử lại.");
                          }
                        }}/>
       <AddPaymentModal open={addPayment.open} defaultStudentId={addPayment.studentId}
@@ -237,7 +237,7 @@ function AppRoot() {
                          const created = await D.api.createPayment(rest);
                          if (bienLaiFile) {
                            try { await D.api.uploadBienLai(created.id, bienLaiFile); }
-                           catch (e) { throw new Error('Đã lưu thanh toán nhưng tải ảnh biên lai thất bại: ' + e.message); }
+                           catch (e) { throw new Error('Đã lưu thanh toán nhưng tải ảnh biên lai thất bại. Kiểm tra mạng rồi tải lại ảnh trong hồ sơ học viên.'); }
                          }
                        }}/>
       <AddClassModal   open={addClass} onClose={() => setAddClass(false)}
@@ -318,8 +318,8 @@ function Boot() {
         minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
         flexDirection: "column", gap: 12, padding: 60,
       }}>
-        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--neon-pink)" }}>Lỗi tải dữ liệu</span>
-        <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--fg-2)" }}>{String(error.message || error)}</span>
+        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--neon-pink)" }}>Không thể tải dữ liệu</span>
+        <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--fg-2)" }}>Ứng dụng không kết nối được đến máy chủ. Kiểm tra kết nối internet rồi mở lại trang.</span>
       </div>
     );
   }

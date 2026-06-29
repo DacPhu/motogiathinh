@@ -320,7 +320,7 @@ function RentVehicleModal({ open, onClose, defaultVehicleId, defaultStudentId })
            primaryLabel={busy ? "Đang ghi…" : "Ghi nhận"}
            primaryIcon="check" primaryDisabled={!canSubmit}
            footerStart={err ? (
-             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>Lỗi: {err}</span>
+             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>{err}</span>
            ) : null}>
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <Select label="Phương tiện" value={vehicleId} onChange={setVehicleId} options={vehicleOpts}/>

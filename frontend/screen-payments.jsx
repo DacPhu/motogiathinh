@@ -381,7 +381,7 @@ function PaymentDetailCard({ row, isClosing, onOpenStudent }) {
           }}>
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--fg-3)" }}>Ảnh biên lai</span>
             <BienLaiPreview hasPhoto={p.bienLaiPhoto} photoUrl={p.bienLaiPhoto_url}
-                            onUpload={(file) => D.api.uploadBienLai(p.id, file).catch(e => alert("Lỗi tải ảnh biên lai: " + e.message))}/>
+                            onUpload={(file) => D.api.uploadBienLai(p.id, file).catch(e => alert("Không thể tải ảnh biên lai. Kiểm tra mạng rồi thử lại."))}/>
           </div>
         </div>
       </div>

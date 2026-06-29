@@ -120,8 +120,18 @@
           if (res && res.raw) {
             var nf = await scanResultToFile(res, "cccd-qr.jpg");
             if (nf) return { file: nf, raw: res.raw, fields: parseCCCD(res.raw) };
-            // Decoded but no usable image — fall through so an uploadable QR photo
-            // is still captured (the screens re-decode the file for auto-fill).
+            // Decoded but no usable image — open camera for user to snap the QR
+            try {
+              var fbPhoto = await P.Camera.getPhoto({
+                quality: 90, resultType: "uri", source: "CAMERA",
+                correctOrientation: true, presentationStyle: "fullscreen",
+                promptLabelPicture: "Chụp ảnh QR CCCD", promptLabelCancel: "Hủy",
+              });
+              var fbFile = await toFile(fbPhoto, "cccd-qr.jpg");
+              if (fbFile) return { file: fbFile, raw: res.raw, fields: parseCCCD(res.raw) };
+            } catch (e2) {}
+            // Both failed — return decoded fields without photo; UI will prompt re-scan
+            return { file: null, raw: res.raw, fields: parseCCCD(res.raw) };
           }
         } catch (e) {
           var code = (e && (e.code || e.message)) || "";

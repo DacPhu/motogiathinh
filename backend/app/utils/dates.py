@@ -39,13 +39,13 @@ def vn_to_iso_date(s: Optional[str]) -> Optional[date]:
 
 
 def license_to_wire(b: Optional[str]) -> str:
-    """Backend has A1, A2, B1, B2, C, D, E, F. Frontend has 'A' and 'A1'."""
+    """Backend enum → frontend wire: only 'A' and 'A1' exist."""
     return "A1" if b == "A1" else "A"
 
 
 def license_to_db(w: Optional[str]) -> str:
-    """Frontend 'A'/'A1' → backend enum A2/A1 (motorbike school is A1 + A2)."""
-    return "A1" if w == "A1" else "A2"
+    """Frontend 'A'/'A1' → backend enum A/A1."""
+    return "A1" if w == "A1" else "A"
 
 
 def gender_to_wire(g: Optional[str]) -> Optional[str]:

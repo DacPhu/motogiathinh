@@ -85,6 +85,49 @@ async def _call_diachi(addresses: list[str]) -> tuple[dict | None, str | None, b
     return data, None, False
 
 
+# ── Single-address conversion (used by student create/update) ───────
+async def convert_single_address(address: str) -> tuple[str, bool]:
+    """Convert one old address → new via diachi.io. Returns (converted, ok).
+
+    NEVER raises — student creation must succeed regardless of conversion.
+    On any failure (API down, rate-limited, unknown address), returns the
+    original address unchanged with ok=False.
+    """
+    if not address or not str(address).strip():
+        return (address or ""), False
+    try:
+        detail, admin = split_address(address)
+        if admin:
+            ckey = addr_cache_key(admin)
+            cached = await cache.get(ckey)
+            if isinstance(cached, str) and cached:
+                return recombine(detail, cached), True
+            queries, detail_val, ckey_val = [admin], detail, ckey
+        else:
+            queries, detail_val, ckey_val = [address], None, None
+
+        data, _error, _rl = await _call_diachi(queries)
+        if data is None:
+            return address, False
+
+        resp = (data.get("data") or {}).get("results", [])
+        if not resp:
+            return address, False
+
+        item = resp[0]
+        conv = (item.get("converted") or "").strip()
+        ok = bool(item.get("success") and conv)
+        if not ok:
+            return address, False
+
+        if ckey_val:
+            await cache.set(ckey_val, conv, ttl=_CACHE_TTL)
+            return recombine(detail_val, conv), True
+        return strip_subward(conv), True
+    except Exception:
+        return address, False
+
+
 @router.post("/convert")
 async def convert_address(body: ConvertRequest, current_user: CurrentUser):
     items = [a.strip() for a in (body.addresses or []) if a and a.strip()][:_MAX]

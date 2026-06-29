@@ -56,6 +56,60 @@ function gPickPhoto() {
   });
 }
 
+// ── IndexedDB draft photo store ───────────────────────────────────
+// Persists picked photos across accidental closes / app kills.
+// Text fields already use localStorage; photos need IndexedDB (File
+// objects are Blobs — localStorage can't hold them).
+const _DB_NAME = 'mgt_guest_draft';
+const _DB_STORE = 'photos';
+const _DB_VERSION = 1;
+const _DRAFT_MAX_FILE = 5 * 1024 * 1024; // 5MB per file (iOS WKWebView ~50MB budget)
+let _draftWarned = false;  // toast once per session, not per pick
+
+function _openDraftDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(_DB_NAME, _DB_VERSION);
+    req.onupgradeneeded = () => { try { req.result.createObjectStore(_DB_STORE); } catch {} };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function draftSavePhoto(prefix, key, file) {
+  if (!file || (file.size && file.size > _DRAFT_MAX_FILE)) return;
+  try {
+    const db = await _openDraftDB();
+    const tx = db.transaction(_DB_STORE, 'readwrite');
+    tx.objectStore(_DB_STORE).put(file, prefix + '_' + key);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch (e) {
+    if (!_draftWarned) {
+      _draftWarned = true;
+      gToast("Không thể lưu ảnh tạm thời. Ảnh sẽ bị mất nếu đóng ứng dụng.", "error");
+    }
+  }
+}
+
+async function draftLoadPhoto(prefix, key) {
+  try {
+    const db = await _openDraftDB();
+    const tx = db.transaction(_DB_STORE, 'readonly');
+    const req = tx.objectStore(_DB_STORE).get(prefix + '_' + key);
+    return await new Promise((res) => { req.onsuccess = () => res(req.result || null); req.onerror = () => res(null); });
+  } catch { return null; }
+}
+
+async function draftClearPhotos(prefix) {
+  try {
+    const db = await _openDraftDB();
+    const tx = db.transaction(_DB_STORE, 'readwrite');
+    const store = tx.objectStore(_DB_STORE);
+    const range = IDBKeyRange.bound(prefix + '_', prefix + '￿');
+    store.delete(range);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch {}
+}
+
 function GuestApp() {
   const D = window.MGT_DATA;
   const me = D.currentUser;
@@ -290,33 +344,41 @@ function GuestStudentDetail({ student, onBack }) {
   const qrReplaced = !!newFiles.cccdQR;
   const isDirty = fieldsDirty || otherPhotosDirty || qrReplaced;
 
-  const pickInto = (key, file) => { if (file) setNewFiles(prev => ({ ...prev, [key]: file })); };
+  const pickInto = (key, file) => { if (file) { setNewFiles(prev => ({ ...prev, [key]: file })); draftSavePhoto(student.id, key, file); } };
+
+  // Restore photos from IndexedDB on mount (async — they pop in after render).
+  React.useEffect(() => {
+    (async () => {
+      const keys = ['cccd', 'cccdBack', 'cccdQR', 'the3x4', 'bangLaiFront', 'bangLaiBack'];
+      const files = {};
+      for (const k of keys) { const f = await draftLoadPhoto(student.id, k); if (f) files[k] = f; }
+      if (Object.keys(files).length) setNewFiles(prev => ({ ...prev, ...files }));
+    })();
+  }, [student.id]); // eslint-disable-line
 
   const scanQr = async (file, preDecoded = null) => {
-    if (!file) return;
     setNewFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
     setQrBusy(true); setQrErr(null); setQrInfo(null);
     try {
       let out;
       if (preDecoded && preDecoded.fields && preDecoded.fields.idNumber) {
         out = { ok: true, fields: preDecoded.fields, raw: preDecoded.raw };
-      } else {
+      } else if (file) {
         out = await window.MGT_QR.scanFile(file);
+      } else {
+        throw new Error("qr");
       }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
-      if (out.fields.address && D.api && D.api.convertAddress) {
-        try {
-          const c = await D.api.convertAddress(out.fields.address);
-          if (c && c.converted) out.fields.address = c.converted;
-          // ok=false ⇒ rate-limited/failed ⇒ this is the OLD address, not converted.
-          out.fields.addressNotSure = !(c && c.ok);
-        } catch (e) { out.fields.addressNotSure = true; }
-      }
-      out.fields.qrRaw = out.raw;  // keep the raw QR payload for the Bộ export
+      out.fields.qrRaw = out.raw;
       setQrInfo(out.fields);
-      setNewFiles(prev => ({ ...prev, cccdQR: file }));
+      if (file) {
+        setNewFiles(prev => ({ ...prev, cccdQR: file }));
+        draftSavePhoto(student.id, 'cccdQR', file);
+      } else {
+        gToast("Quét thành công nhưng ảnh QR chưa lưu được. Bấm vào ô QR để chụp lại.", "info");
+      }
     } catch (e) {
-      setQrErr("QR chưa rõ. Hãy chụp rõ hơn.");
+      setQrErr("Không đọc được mã QR. Hãy giữ yên, chụp lại ảnh rõ nét hơn.");
     } finally { setQrBusy(false); }
   };
 
@@ -337,9 +399,10 @@ function GuestStudentDetail({ student, onBack }) {
       for (const [key, file] of Object.entries(newFiles)) {
         if (!file) continue;
         try { await D.api.uploadStudentDoc(student.id, key, file); }
-        catch (e) { gToast(`Lỗi tải ảnh ${key}: ${e.message}`, "error"); }
+        catch (e) { gToast("Tải ảnh thất bại. Kiểm tra mạng rồi bấm 'Lưu thay đổi' lại.", "error"); }
       }
       setNewFiles({}); setQrInfo(null);
+      draftClearPhotos(student.id);
       gToast("Đã lưu thay đổi.", "success");
     } catch (e) {
       setErr(e?.message || String(e));
@@ -391,10 +454,7 @@ function GuestStudentDetail({ student, onBack }) {
         </div>
       </div>
 
-      {err && <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>Lỗi: {err}</span>}
-      {qrReplaced && qrInfo?.addressNotSure && (
-        <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-pink)" }}>⚠ Địa chỉ chưa chuyển đổi — kiểm tra lại.</span>
-      )}
+      {err && <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>{err}</span>}
 
       <button onClick={submit} disabled={!canSubmit} style={{
         padding: "14px 16px", borderRadius: 14, border: "none", cursor: canSubmit ? "pointer" : "not-allowed",
@@ -459,6 +519,13 @@ function GuestAddStudentModal({ open, onClose }) {
       if (draft?.qrInfo?.idNumber && isDuplicateCccd(draft.qrInfo.idNumber)) {
         setDupErr("CCCD này đã có hồ sơ trong hệ thống.");
       }
+      // Restore photos from IndexedDB (async — they pop in after text fields).
+      (async () => {
+        const keys = ['cccd', 'cccdBack', 'cccdQR', 'the3x4', 'bangLaiFront', 'bangLaiBack'];
+        const files = {};
+        for (const k of keys) { const f = await draftLoadPhoto('new', k); if (f) files[k] = f; }
+        if (Object.keys(files).length) setDocFiles(prev => ({ ...prev, ...files }));
+      })();
     } else if (!open && wasOpen) {
       // Closing — save text fields + qrInfo so an accidental exit is recoverable.
       try {
@@ -473,43 +540,41 @@ function GuestAddStudentModal({ open, onClose }) {
     .filter(c => myClassIds.has(c.id) && (c.status === "đang mở" || c.status === "đang diễn ra"))
     .map(c => ({ value: c.id, label: c.code }));
 
-  const pickInto = (key, file) => { if (file) setDocFiles(prev => ({ ...prev, [key]: file })); };
+  const pickInto = (key, file) => { if (file) { setDocFiles(prev => ({ ...prev, [key]: file })); draftSavePhoto('new', key, file); } };
 
   const scanQr = async (file, preDecoded = null) => {
-    if (!file) return;
     setDocFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
     setQrBusy(true); setQrErr(null);
     try {
       let out;
       if (preDecoded && preDecoded.fields && preDecoded.fields.idNumber) {
         out = { ok: true, fields: preDecoded.fields, raw: preDecoded.raw };
-      } else {
+      } else if (file) {
         out = await window.MGT_QR.scanFile(file);
+      } else {
+        throw new Error("qr");
       }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
-      if (out.fields.address && D.api && D.api.convertAddress) {
-        try {
-          const c = await D.api.convertAddress(out.fields.address);
-          if (c && c.converted) out.fields.address = c.converted;
-          // ok=false ⇒ rate-limited/failed ⇒ this is the OLD address, not converted.
-          out.fields.addressNotSure = !(c && c.ok);
-        } catch (e) { out.fields.addressNotSure = true; }
-      }
-      out.fields.qrRaw = out.raw;  // keep the raw QR payload for the Bộ export
+      out.fields.qrRaw = out.raw;
       setQrInfo(out.fields);
       setName(out.fields.name || "");
-      setDocFiles(prev => ({ ...prev, cccdQR: file }));
+      if (file) {
+        setDocFiles(prev => ({ ...prev, cccdQR: file }));
+        draftSavePhoto('new', 'cccdQR', file);
+      } else {
+        gToast("Quét thành công nhưng ảnh QR chưa lưu được. Bấm vào ô QR để chụp lại.", "info");
+      }
       setDupErr(isDuplicateCccd(out.fields.idNumber) ? "CCCD này đã có hồ sơ trong hệ thống." : null);
     } catch (e) {
       setQrInfo(null); setName(""); setDupErr(null);
-      setQrErr("QR chưa rõ — hãy chụp lại ảnh rõ mã QR.");
+      setQrErr("Không đọc được mã QR. Giữ yên điện thoại, chụp lại ảnh rõ nét hơn.");
     } finally { setQrBusy(false); }
   };
 
   // Required fields (bangLai OPTIONAL). Phone must be a full 10 digits.
   const phoneDigits = window.digitsOnly ? window.digitsOnly(phone) : String(phone || "").replace(/[^0-9]/g, "");
   const missing = {
-    qr: !qrInfo?.idNumber, name: !name.trim(), phone: phoneDigits.length !== 10,
+    qr: !qrInfo?.idNumber || !docFiles.cccdQR, name: !name.trim(), phone: phoneDigits.length !== 10,
     licence: !licence, classId: !classId,
     cccd: !docFiles.cccd, cccdBack: !docFiles.cccdBack, the3x4: !docFiles.the3x4,
   };
@@ -560,10 +625,11 @@ function GuestAddStudentModal({ open, onClose }) {
       for (const [key, file] of Object.entries(uploadMap)) {
         if (!file) continue;
         try { await D.api.uploadStudentDoc(created.id, key, file); }
-        catch (e) { gToast(`Lỗi tải ảnh ${key}: ${e.message}`, "error"); }
+        catch (e) { gToast("Tải ảnh thất bại. Kiểm tra mạng rồi thử lại.", "error"); }
       }
       // Successful create — drop the saved draft.
       try { localStorage.removeItem(DRAFT_KEY); } catch {}
+      draftClearPhotos('new');
       setSuccess({ name: form.name, licence: form.licence, classCode: D.getClass(form.classId)?.code || "—" });
     } catch (e) {
       const msg = e?.message || String(e);
@@ -594,7 +660,7 @@ function GuestAddStudentModal({ open, onClose }) {
           {err && (
             <div style={{ padding: "8px 12px", borderRadius: 10, fontFamily: "var(--font-mono)", fontSize: 11,
                           background: "color-mix(in oklab, var(--neon-pink) 12%, transparent)",
-                          color: "var(--neon-pink)", border: "1px solid var(--neon-pink)" }}>Lỗi: {err}</div>
+                          color: "var(--neon-pink)", border: "1px solid var(--neon-pink)" }}>{err}</div>
           )}
           <Select label="Lớp" value={classId} onChange={setClassId} placeholder="Chọn lớp" options={classOpts}
                   success={!missing.classId} invalid={showErrors && missing.classId}/>
@@ -614,9 +680,6 @@ function GuestAddStudentModal({ open, onClose }) {
               )}
             </div>
           </div>
-          {qrInfo?.addressNotSure && (
-            <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-pink)" }}>⚠ Địa chỉ chưa chuyển đổi — sẽ lưu địa chỉ cũ, kiểm tra lại sau.</span>
-          )}
           <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 10 }}>
             <Input label="Số điện thoại" value={phone} onChange={setPhone} placeholder="090 123 4567" digits maxDigits={10} format={window.fmtPhone}
                    success={!missing.phone} invalid={showErrors && missing.phone}/>
@@ -720,7 +783,7 @@ function QrSlot({ file, filled, busy, ok, idNumber, invalid, error, src, onPick 
     } else {
       f = await gPickPhoto();
     }
-    if (f) onPick(f, preDecoded);
+    if (f || preDecoded) onPick(f, preDecoded);
   };
   const border = busy ? "2px solid var(--neon-cyan)" : ok ? "3px solid var(--neon-lime)" : (invalid || error) ? "2px solid var(--neon-pink)" : "1px dashed var(--glass-stroke-strong)";
   const chip = { position: "absolute", left: 8, bottom: 6, zIndex: 1, padding: "2px 8px", borderRadius: 8,

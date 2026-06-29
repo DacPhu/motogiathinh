@@ -28,6 +28,7 @@ from app.utils.dates import (
 )
 from app.utils.id_generator import next_student_id
 from app.utils.vn_address import old_address_from_qr
+from app.routers.address import convert_single_address
 
 router = APIRouter(prefix="/students", tags=["students"])
 
@@ -286,6 +287,13 @@ async def create_student(
         except ValueError: resp_uuid = None
 
     ma_hv = await next_student_id()
+
+    # Address conversion: best-effort, never blocks profile creation.
+    # The old address (from QR or form) is always saved in dia_chi_cccd.
+    # The converted new address goes into dia_chi; on failure, dia_chi = old address.
+    _old_addr = (old_address_from_qr(f.cccdQrRaw) or f.address) or ""
+    _new_addr, _addr_ok = await convert_single_address(_old_addr)
+
     s = Student(
         branch_id=cls.branch_id,
         ma_hoc_vien=ma_hv,
@@ -297,8 +305,8 @@ async def create_student(
         cccd_issued_place=f.noiCapCCCD or None,
         cccd_qr_raw=f.cccdQrRaw or None,
         so_dien_thoai=f.phone or "",
-        dia_chi=f.address or None,
-        dia_chi_cccd=(old_address_from_qr(f.cccdQrRaw) or f.address) or None,
+        dia_chi=_new_addr or None,
+        dia_chi_cccd=_old_addr or None,
         tinh_thanh=f.noiTamTru or None,
         loai_bang_lai=LicenseType(license_to_db(f.licence)),
         trang_thai=StudentStatus.active,
@@ -373,15 +381,19 @@ async def update_student(
     if "dob" in fields:         s.ngay_sinh = vn_to_iso_date(fields["dob"]) or s.ngay_sinh
     if "gender" in fields:      s.gioi_tinh = GenderType(gender_to_db(fields["gender"]) or "other")
     if "idNumber" in fields:    s.cccd_number = fields["idNumber"] or None
-    if "address" in fields:     s.dia_chi = fields["address"] or None
     if "noiTamTru" in fields:   s.tinh_thanh = fields["noiTamTru"] or None
     if "ngayCapCCCD" in fields: s.cccd_issued_date = vn_to_iso_date(fields["ngayCapCCCD"])
     if "noiCapCCCD" in fields:  s.cccd_issued_place = fields["noiCapCCCD"] or None
+    # Address: QR-triggered updates go through conversion; manual edits stored as-is.
     if "cccdQrRaw" in fields:
         s.cccd_qr_raw = fields["cccdQrRaw"] or None
         _old = old_address_from_qr(fields["cccdQrRaw"])
         if _old:
             s.dia_chi_cccd = _old
+            _new, _ok = await convert_single_address(_old)
+            s.dia_chi = _new
+    if "address" in fields and "cccdQrRaw" not in fields:
+        s.dia_chi = fields["address"] or None
     if "licence" in fields:     s.loai_bang_lai = LicenseType(license_to_db(fields["licence"]))
     if "notes" in fields:       s.ghi_chu = fields["notes"] or None
     if "profileComplete" in fields: s.profile_complete = fields["profileComplete"]

@@ -39,9 +39,87 @@
   } catch {}
   const p2  = (n) => String(n).padStart(2, '0');
 
+  // ── Human-readable Vietnamese error mapping ───────────────────────
+  // Every message: WHAT happened (plain Vietnamese) + WHAT TO DO (explicit action).
+  function _humanError(err, ctx) {
+    if (!err) return 'Có lỗi xảy ra. Liên hệ quản trị viên để được hỗ trợ.';
+    const msg = String(err.message || err || '');
+
+    // Network errors — most common on mobile
+    const net = !navigator.onLine || err instanceof TypeError || /failed to fetch|network|NetworkError/i.test(msg);
+    if (net) return 'Thiết bị không có kết nối internet. Kiểm tra WiFi hoặc sóng điện thoại, rồi thử lại.';
+
+    if (/timeout/i.test(msg)) return 'Kết nối quá chậm — ảnh chưa tải lên được. Kiểm tra mạng rồi bấm "Thử lại".';
+
+    // HTTP status codes (from api() or _upload: "403 /students/xxx ...")
+    const m = msg.match(/^(\d{3})/);
+    if (m) {
+      const s = parseInt(m[1], 10);
+      const detail = msg.replace(/^\d{3}\s*\S*\s*/, '');
+      if (s === 400) {
+        if (/file_too_large/i.test(detail))
+          return 'Ảnh quá lớn (tối đa 8MB). Mở camera, chọn chất lượng thấp hơn rồi chụp lại.';
+        if (/invalid_key/i.test(detail))
+          return 'Loại tài liệu không hợp lệ. Liên hệ quản trị viên.';
+        return 'Thông tin không hợp lệ. Kiểm tra lại các trường đã nhập và thử lại.';
+      }
+      if (s === 401)
+        return 'Sai email hoặc mật khẩu. Kiểm tra lại thông tin đăng nhập.';
+      if (s === 403)
+        return 'Bạn không có quyền thao tác trên hồ sơ này. Liên hệ quản trị viên nếu cần.';
+      if (s === 404)
+        return 'Không tìm thấy hồ sơ. Hồ sơ có thể đã bị xóa — liên hệ quản trị viên.';
+      if (s === 409)
+        return 'Số CCCD này đã có trong hệ thống. Kiểm tra lại hoặc liên hệ quản trị viên.';
+      if (s >= 500)
+        return 'Hệ thống đang gặp sự cố. Đợi vài giây rồi thử lại. Nếu lỗi kéo dài, liên hệ quản trị viên.';
+    }
+
+    return 'Có lỗi xảy ra. Thử lại, hoặc liên hệ quản trị viên để được hỗ trợ.';
+  }
+
+  // ── Fetch with timeout — prevents infinite "Đang lưu..." hangs ────
+  // Each attempt gets its own 30s budget. Throws { message: 'timeout', retryable: true }
+  // so the retry layer (Task #8) can re-attempt automatically.
+  async function _fetchWithTimeout(url, opts, ms = 30000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, { ...opts, signal: ctrl.signal });
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        const err = new Error('timeout');
+        err.retryable = true;  // retryable — Task #8 will re-attempt
+        throw err;
+      }
+      throw e;
+    } finally { clearTimeout(timer); }
+  }
+
+  // ── Retry with exponential backoff — for flaky mobile uploads ─────
+  // Retries `fn` up to `attempts` times. Only retries when:
+  //   • e.retryable === true  (explicit — set by _fetchWithTimeout or _upload)
+  //   • e.retryable is unset  AND message matches network/timeout/5xx/429
+  // Never retries 400/403/409 (terminal errors).
+  async function _retryWithBackoff(fn, { attempts = 3, baseMs = 800, maxMs = 8000, onRetry } = {}) {
+    for (let i = 0; i < attempts; i++) {
+      try { return await fn(); }
+      catch (e) {
+        const retryable = e && (
+          e.retryable === true ||
+          (e.retryable !== false && /failed to fetch|timeout|network|5\d\d|429/i.test(e.message || ''))
+        );
+        if (!retryable || i === attempts - 1) throw e;
+        if (onRetry) onRetry(i);
+        const delay = Math.min(baseMs * Math.pow(2, i) + Math.random() * 400, maxMs);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+
   async function api(path, opts = {}) {
     if (window._MGT_OFFLINE && opts.method && opts.method !== 'GET') {
-      throw new Error('Không có mạng — vui lòng kết nối internet để thực hiện thao tác này.');
+      throw new Error('Không có kết nối internet. Bật WiFi hoặc kiểm tra sóng điện thoại rồi thử lại.');
     }
     const res = await fetch(API + path, {
       credentials: 'include',
@@ -52,7 +130,7 @@
     if (res.status === 401 && path !== '/me') { window.location.reload(); throw new Error('auth_required'); }
     if (!res.ok) {
       let detail = ''; try { detail = JSON.stringify(await res.json()); } catch {}
-      throw new Error(`HTTP ${res.status} ${path} ${detail}`);
+      throw new Error(_humanError({ message: `${res.status} ${path} ${detail}` }, 'api'));
     }
     return res.json();
   }
@@ -762,11 +840,23 @@
           return { id };
         },
         async _upload(path, file) {
-          if (window._MGT_OFFLINE) throw new Error('Không có mạng — vui lòng kết nối internet để tải ảnh.');
-          const fd = new FormData(); fd.append('file', file);
-          const res = await fetch(API + path, { method: 'POST', credentials: 'include', headers: window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {}, body: fd });
-          if (!res.ok) throw new Error('upload_failed: ' + res.status);
-          return res.json();
+          if (window._MGT_OFFLINE) throw new Error('Không có kết nối internet. Bật WiFi hoặc kiểm tra sóng rồi thử lại.');
+          return _retryWithBackoff(async () => {
+            const fd = new FormData(); fd.append('file', file);
+            const res = await _fetchWithTimeout(API + path, {
+              method: 'POST', credentials: 'include',
+              headers: window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {},
+              body: fd,
+            });
+            if (!res.ok) {
+              const err = new Error(_humanError({ message: `${res.status} upload` }, 'upload'));
+              err.retryable = (res.status === 429 || res.status >= 500);
+              throw err;
+            }
+            return res.json();
+          }, {
+            onRetry: () => { if (window.MGT_TOAST) window.MGT_TOAST('Tải ảnh thất bại, đang thử lại…', { ms: 2000 }); },
+          });
         },
         async uploadStudentDoc(studentId, key, file) {
           const capped = await _capImage(file);
@@ -804,11 +894,30 @@
         async downloadDashboardPdf() { return this._downloadReport('/reports/dashboard.pdf', 'tongquan', 'pdf', 'báo cáo trực quan'); },
         async downloadFormalReportPdf()  { return this._downloadReport('/reports/data.pdf',  'baocao',   'pdf',  'báo cáo số liệu PDF'); },
         async downloadFormalReportXlsx() { return this._downloadReport('/reports/data.xlsx', 'baocao',   'xlsx', 'báo cáo Excel'); },
+        // GET /api/reports/ctv-competition.json — top-3 CTV "bảng vàng"
+        // for the month. month/year optional (default current month
+        // server-side). opts.fresh === true appends `?fresh=1` to bypass
+        // the server's 5-min cache and force a recompute (used by the
+        // dialog's "Làm mới" button). Returns { month, year, monthLabel,
+        // podium, rest, totalCtv, totalProfiles, cached }.
+        async fetchCtvCompetition(month, year, opts) {
+          const params = [];
+          if (month != null && year != null) { params.push(`month=${month}`, `year=${year}`); }
+          if (opts && opts.fresh === true) params.push('fresh=1');
+          const qs = params.length ? '?' + params.join('&') : '';
+          const res = await fetch(API + '/reports/ctv-competition.json' + qs, { credentials: 'include' });
+          if (!res.ok) throw new Error(_humanError({ message: `${res.status} reports` }, 'api'));
+          return res.json();
+        },
+        async downloadCtvCompetitionXlsx(month, year) {
+          const qs = (month != null && year != null) ? `?month=${month}&year=${year}` : '';
+          return this._downloadReport('/reports/ctv-competition.xlsx' + qs, 'thi-dua-ctv', 'xlsx', 'bảng vàng CTV');
+        },
         async _downloadReport(path, prefix, ext, humanLabel) {
           try {
             window.MGT_TOAST && window.MGT_TOAST(`Đang tạo ${humanLabel}…`, { ms: 6000 });
             const res = await fetch(API + path, { credentials: 'include' });
-            if (!res.ok) throw new Error('HTTP ' + res.status);
+            if (!res.ok) throw new Error(_humanError({ message: `${res.status} download` }, 'api'));
             const blob = await res.blob();
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -818,7 +927,7 @@
             setTimeout(() => URL.revokeObjectURL(url), 1500);
             window.MGT_TOAST && window.MGT_TOAST(`Đã tạo ${humanLabel}.`);
           } catch (e) {
-            window.MGT_TOAST && window.MGT_TOAST(`Lỗi tạo ${humanLabel}: ` + (e.message || e));
+            window.MGT_TOAST && window.MGT_TOAST(`Không thể tạo ${humanLabel}. Kiểm tra mạng rồi thử lại.`, { ms: 5000 });
           }
         },
 
@@ -830,7 +939,7 @@
         async ocrCccd(file) {
           const fd = new FormData(); fd.append('file', file);
           const res = await fetch(API + '/ocr/cccd', { method: 'POST', credentials: 'include', body: fd });
-          if (!res.ok) throw new Error('ocr_failed: ' + res.status);
+          if (!res.ok) throw new Error(_humanError({ message: `${res.status} ocr` }, 'upload'));
           return res.json();
         },
         async updateStudent(id, patch) {

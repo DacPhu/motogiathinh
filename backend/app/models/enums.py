@@ -3,13 +3,7 @@ import enum
 
 class LicenseType(str, enum.Enum):
     A1 = "A1"
-    A2 = "A2"
-    B1 = "B1"
-    B2 = "B2"
-    C = "C"
-    D = "D"
-    E = "E"
-    F = "F"
+    A = "A"
 
 
 class GenderType(str, enum.Enum):

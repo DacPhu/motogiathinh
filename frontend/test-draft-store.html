@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>IndexedDB Draft Photo Store — Quick Test</title>
+<style>
+  body { font-family: monospace; padding: 24px; background: #111; color: #ccc; }
+  .pass { color: #4f4; } .fail { color: #f44; } .info { color: #888; }
+  #log { white-space: pre-wrap; line-height: 1.6; }
+</style>
+</head><body>
+<h3>IndexedDB Draft Store — Smoke Test</h3>
+<div id="log"></div>
+<script>
+// ── Paste the exact functions from screen-guest.jsx ───────────────
+const _DB_NAME = 'mgt_guest_draft';
+const _DB_STORE = 'photos';
+const _DB_VERSION = 1;
+const _DRAFT_MAX_FILE = 5 * 1024 * 1024;
+
+function _openDraftDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(_DB_NAME, _DB_VERSION);
+    req.onupgradeneeded = () => { try { req.result.createObjectStore(_DB_STORE); } catch {} };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function draftSavePhoto(prefix, key, file) {
+  if (!file || (file.size && file.size > _DRAFT_MAX_FILE)) return;
+  try {
+    const db = await _openDraftDB();
+    const tx = db.transaction(_DB_STORE, 'readwrite');
+    tx.objectStore(_DB_STORE).put(file, prefix + '_' + key);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch {}
+}
+
+async function draftLoadPhoto(prefix, key) {
+  try {
+    const db = await _openDraftDB();
+    const tx = db.transaction(_DB_STORE, 'readonly');
+    const req = tx.objectStore(_DB_STORE).get(prefix + '_' + key);
+    return await new Promise((res) => { req.onsuccess = () => res(req.result || null); req.onerror = () => res(null); });
+  } catch { return null; }
+}
+
+async function draftClearPhotos(prefix) {
+  try {
+    const db = await _openDraftDB();
+    const tx = db.transaction(_DB_STORE, 'readwrite');
+    const store = tx.objectStore(_DB_STORE);
+    const range = IDBKeyRange.bound(prefix + '_', prefix + '￿');
+    store.delete(range);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch {}
+}
+
+// ── Test harness ──────────────────────────────────────────────────
+const log = document.getElementById('log');
+let pass = 0, fail = 0;
+function ok(name) { log.innerHTML += `<span class="pass">PASS</span> ${name}\n`; pass++; }
+function ko(name, err) { log.innerHTML += `<span class="fail">FAIL</span> ${name}: ${err}\n`; fail++; }
+function info(msg) { log.innerHTML += `<span class="info">${msg}</span>\n`; }
+
+function makeFile(name, size) {
+  const buf = new ArrayBuffer(size);
+  new Uint8Array(buf).fill(0x42);
+  return new File([buf], name, { type: 'image/jpeg' });
+}
+
+async function run() {
+  try {
+    // Test 1: Open DB
+    const db1 = await _openDraftDB();
+    ok('1. Open/create IndexedDB');
+    db1.close();
+
+    // Test 2: Save + load a photo
+    const fakeFile = makeFile('test-photo.jpg', 1024);
+    await draftSavePhoto('new', 'cccd', fakeFile);
+    const loaded = await draftLoadPhoto('new', 'cccd');
+    if (loaded && loaded.name === 'test-photo.jpg' && loaded.size === 1024) {
+      ok('2. Save + load photo (roundtrip)');
+    } else {
+      ko('2. Save + load', `got ${JSON.stringify(loaded)}`);
+    }
+
+    // Test 3: Save multiple keys under same prefix
+    await draftSavePhoto('new', 'cccdBack', makeFile('back.jpg', 2048));
+    await draftSavePhoto('new', 'the3x4', makeFile('portrait.jpg', 512));
+    const l2 = await draftLoadPhoto('new', 'cccdBack');
+    const l3 = await draftLoadPhoto('new', 'the3x4');
+    if (l2 && l2.name === 'back.jpg' && l3 && l3.name === 'portrait.jpg') {
+      ok('3. Multiple keys under same prefix');
+    } else {
+      ko('3. Multiple keys', 'load failed');
+    }
+
+    // Test 4: Prefix isolation — 'new' should not collide with student ID
+    await draftSavePhoto('a1b2c3d4', 'cccd', makeFile('student-photo.jpg', 4096));
+    const fromNew = await draftLoadPhoto('new', 'cccd');
+    const fromStudent = await draftLoadPhoto('a1b2c3d4', 'cccd');
+    if (fromNew && fromNew.name === 'test-photo.jpg' && fromStudent && fromStudent.name === 'student-photo.jpg') {
+      ok('4. Prefix isolation (no collisions)');
+    } else {
+      ko('4. Prefix isolation', `new=${fromNew?.name} student=${fromStudent?.name}`);
+    }
+
+    // Test 5: Overwrite — saving same key replaces the value
+    await draftSavePhoto('new', 'cccd', makeFile('replacement.jpg', 8192));
+    const overwritten = await draftLoadPhoto('new', 'cccd');
+    if (overwritten && overwritten.name === 'replacement.jpg' && overwritten.size === 8192) {
+      ok('5. Overwrite same key');
+    } else {
+      ko('5. Overwrite', `got ${overwritten?.name}`);
+    }
+
+    // Test 6: draftClearPhotos removes only matching prefix
+    await draftClearPhotos('new');
+    const cleared = await draftLoadPhoto('new', 'cccd');
+    const survived = await draftLoadPhoto('a1b2c3d4', 'cccd');
+    if (cleared === null && survived && survived.name === 'student-photo.jpg') {
+      ok('6. Clear prefix only (other prefix survives)');
+    } else {
+      ko('6. Clear prefix', `cleared=${cleared?.name} survived=${survived?.name}`);
+    }
+
+    // Test 7: Clear non-existent prefix does not throw
+    try {
+      await draftClearPhotos('nonexistent');
+      ok('7. Clear non-existent prefix (no throw)');
+    } catch (e) {
+      ko('7. Clear non-existent', e.message);
+    }
+
+    // Test 8: Load non-existent key returns null
+    const miss = await draftLoadPhoto('new', 'doesnotexist');
+    if (miss === null) {
+      ok('8. Load non-existent key returns null');
+    } else {
+      ko('8. Load miss', `got ${miss}`);
+    }
+
+    // Test 9: Oversized file (>5MB) is silently rejected
+    const huge = makeFile('huge.jpg', 6 * 1024 * 1024);
+    await draftSavePhoto('new', 'huge', huge);
+    const hugeLoaded = await draftLoadPhoto('new', 'huge');
+    if (hugeLoaded === null) {
+      ok('9. Oversized file rejected (>5MB)');
+    } else {
+      ko('9. Oversized file', 'was saved despite exceeding limit');
+    }
+
+    // Test 10: Null/undefined file is silently rejected
+    await draftSavePhoto('new', 'nullfile', null);
+    const nullLoaded = await draftLoadPhoto('new', 'nullfile');
+    if (nullLoaded === null) {
+      ok('10. Null file rejected');
+    } else {
+      ko('10. Null file', 'was saved');
+    }
+
+    // Cleanup
+    await draftClearPhotos('a1b2c3d4');
+    await draftClearPhotos('new');
+    info('---');
+    info(`Results: ${pass} passed, ${fail} failed`);
+
+  } catch (e) {
+    ko('UNEXPECTED ERROR', e.message + '\n' + e.stack);
+  }
+}
+
+run();
+</script>
+</body></html>
