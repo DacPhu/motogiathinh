@@ -99,18 +99,22 @@ function Sidebar({ active, onNav, onQuickAdd, unreadCount, collapsed }) {
 
       <div style={{ flex: 1 }}></div>
 
-      {/* Download pill — full-width button with phone icon */}
-      <button onClick={() => setDownloadOpen(true)} title="Tải ứng dụng" style={{
-        display: "flex", alignItems: "center", gap: 10, padding: 10,
-        borderRadius: 14, background: "var(--ink-2)", border: "1px solid var(--glass-stroke)",
-        cursor: "pointer", textAlign: "left", width: "100%",
-        transition: "all 140ms var(--ease-out)",
-      }}
-      onMouseEnter={e => { e.currentTarget.style.borderColor = "var(--neon-cyan)"; e.currentTarget.style.boxShadow = "0 0 14px var(--neon-cyan-haze)"; }}
-      onMouseLeave={e => { e.currentTarget.style.borderColor = "var(--glass-stroke)"; e.currentTarget.style.boxShadow = "none"; }}>
-        <Icon name="smartphone" size={20} color="var(--neon-cyan)"/>
-        <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, fontWeight: 600, color: "var(--fg-1)" }}>Tải ứng dụng</span>
-      </button>
+      {/* Download pill — sits above the vehicle-mode toggle, right-aligned */}
+      <div style={{ display: "flex", padding: "0 4px", gap: 8 }}>
+        <div style={{ flex: 1 }}/>
+        <button onClick={() => setDownloadOpen(true)} title="Tải ứng dụng"
+          style={{
+            flex: 1, height: 32, padding: 3, border: "none",
+            cursor: "pointer", borderRadius: 999, background: "var(--glass-2)",
+            border: "1px solid var(--glass-stroke-strong)",
+            backdropFilter: "var(--glass-blur-soft)", WebkitBackdropFilter: "var(--glass-blur-soft)",
+            boxShadow: "0 1px 0 rgba(255,255,255,0.04) inset",
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            transition: "background 220ms var(--ease-out)", overflow: "hidden",
+          }}>
+          <Icon name="smartphone" size={14} color="var(--fg-3)"/>
+        </button>
+      </div>
 
       {/* Theme toggle + vehicle-mode toggle — fill the nav-card width */}
       <div style={{ display: "flex", padding: "0 4px", gap: 8 }}>
