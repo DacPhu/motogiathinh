@@ -39,6 +39,35 @@
   } catch {}
   const p2  = (n) => String(n).padStart(2, '0');
 
+  // Decode userId (sub claim) from a JWT without verifying the signature.
+  // Used to scope the offline cache key per user — a failed decode falls
+  // back to the login overlay, so no cross-user data is ever shown.
+  function _decodeUserId(token) {
+    try {
+      const payload = token.split('.')[1];
+      const decoded = JSON.parse(atob(payload));
+      return decoded.sub || null;
+    } catch { return null; }
+  }
+
+  // Per-user cache key. Before login (userId unknown), uses a sentinel
+  // that is never read — boot always hits the API first on web.
+  function _cacheKey(userId) {
+    return userId ? `mgt_snapshot_v1_${userId}` : '_mgt_snapshot_v1_pending';
+  }
+
+  // Remove all mgt_snapshot_v1* keys (old format + all user-scoped).
+  function _clearAllSnapshotCaches() {
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('mgt_snapshot_v1')) keys.push(k);
+      }
+      keys.forEach(k => localStorage.removeItem(k));
+    } catch {}
+  }
+
   // ── Human-readable Vietnamese error mapping ───────────────────────
   // Every message: WHAT happened (plain Vietnamese) + WHAT TO DO (explicit action).
   function _humanError(err, ctx) {
@@ -128,7 +157,21 @@
       ...opts,
       body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body,
     });
-    if (res.status === 401 && path !== '/me') { try { localStorage.removeItem(_CACHE_KEY); } catch {} window.location.reload(); throw new Error('auth_required'); }
+    if (res.status === 401 && path !== '/me') {
+      _clearAllSnapshotCaches();
+      // Also clear all user-scoped draft keys — auth failure means the
+      // session is invalid and drafts may belong to a stale user.
+      try {
+        const dk = [];
+        for (let i = 0; i < localStorage.length; i++) {
+          const k = localStorage.key(i);
+          if (k && k.startsWith('mgt_guest_add_draft_')) dk.push(k);
+        }
+        dk.forEach(k => localStorage.removeItem(k));
+      } catch {}
+      window.location.reload();
+      throw new Error('auth_required');
+    }
     if (!res.ok) {
       let detail = ''; try { detail = JSON.stringify(await res.json()); } catch {}
       throw new Error(_humanError({ message: `${res.status} ${path} ${detail}` }, 'api'));
@@ -472,9 +515,21 @@
     });
   }
 
-  const _CACHE_KEY = 'mgt_snapshot_v1';
+  let _CACHE_KEY = '_mgt_snapshot_v1_pending';
 
   async function boot() {
+    // Scope cache to current user: decode userId from the JWT that native
+    // bridge (or login overlay) placed on window.MGT_TOKEN.
+    const _userId = _decodeUserId(window.MGT_TOKEN);
+    _CACHE_KEY = _cacheKey(_userId);
+
+    // One-time cleanup: remove old-format unsoped cache key from pre-update.
+    // Also clear all if JWT decode failed (userId is null).
+    if (!_userId) { _clearAllSnapshotCaches(); }
+    else {
+      try { localStorage.removeItem('mgt_snapshot_v1'); } catch {}
+    }
+
     let me = null, mePerms = {}, fromCache = false, rawCache = null;
     try {
       const meResp = await api('/me');
@@ -485,16 +540,23 @@
       const isNetErr = !navigator.onLine || err instanceof TypeError || /failed to fetch/i.test(String(err.message || ''));
       if (isNetErr) {
         try { rawCache = JSON.parse(localStorage.getItem(_CACHE_KEY)); } catch {}
-        if (rawCache && rawCache.me) {
+        // Verify the cached data belongs to the current user.
+        if (rawCache && rawCache.me && rawCache.me.id === _userId) {
           me = rawCache.me;
           mePerms = rawCache.mePerms || {};
           fromCache = true;
           window._MGT_OFFLINE = true;
+        } else if (rawCache && rawCache.me && rawCache.me.id !== _userId) {
+          // Cache belongs to a different user — discard it.
+          try { localStorage.removeItem(_CACHE_KEY); } catch {}
+          rawCache = null;
         }
       }
       if (!me) {
         me = await showLoginOverlay();
         try { const reMe = await api('/me'); mePerms = reMe.permissions || {}; } catch { mePerms = {}; }
+        // Broadcast login to other tabs so they can react.
+        try { window._mgtBroadcastLogin?.(me?.id); } catch {}
       }
     }
 
@@ -663,6 +725,98 @@
 
     const _normPromo = (raw) => { raw.appliesTo = (raw.appliesTo_csv || '').split('|').filter(Boolean); };
 
+    // Background data refresh — re-fetches all endpoints and updates the
+    // existing arrays/Maps in place so React components keep their refs.
+    // Used by _probeReconnect after network recovery.
+    async function _refreshAllData() {
+      const safeActivityLog = () => api('/activity-log').catch(() => []);
+      const [newBranches, newAccounts, newFeePlans, newPromotions, newTeachers, newVehicles,
+             newClassesRaw, newStudentsRaw, newPaymentsRaw, newNotifications, newActivityLog, newProfileDocs] =
+        await Promise.all([
+          api('/branches'), api('/accounts'), api('/fee-plans'), api('/promotions'),
+          api('/teachers'), api('/vehicles'), api('/classes'), api('/students'),
+          api('/payments'), api('/notifications'), safeActivityLog(),
+          api('/constants/profile-docs'),
+        ]);
+      // Update permissions in case they changed.
+      try { const reMe = await api('/me'); me = reMe.user; mePerms = reMe.permissions || {}; } catch {}
+
+      const NOW2 = new Date(), NOW_MS2 = NOW2.getTime();
+
+      // Clear and repopulate arrays (same references, new contents).
+      branches.length = 0; branches.push(...newBranches);
+      accounts.length = 0; accounts.push(...newAccounts);
+      feePlans.length = 0; feePlans.push(...newFeePlans);
+      promotions.length = 0; promotions.push(...newPromotions);
+      teachers.length = 0; teachers.push(...newTeachers);
+      vehicles.length = 0; vehicles.push(...newVehicles);
+      notifications.length = 0; notifications.push(...newNotifications);
+      activityLog.length = 0; activityLog.push(...newActivityLog);
+
+      // Process classes
+      const newClasses = newClassesRaw.map(c => ({ ...c, _openMs: parseDT(c.openDate), _examMs: parseDT(c.examDate) }));
+      newClasses.forEach(setClassStatus);
+      classes.length = 0; classes.push(...newClasses);
+
+      // Process students
+      const newStudents = newStudentsRaw.map(s => ({
+        ...s, createdAtMs: parseDT(s.createdAt),
+        docs: { cccd: !!s.docs_cccd, gksk: !!s.docs_gksk, donDeNghi: !!s.docs_donDeNghi, the3x4: !!s.docs_the3x4, cccdBack: !!s.docs_cccdBack, cccdQR: !!s.docs_cccdQR, bangLaiFront: !!s.docs_bangLaiFront, bangLaiBack: !!s.docs_bangLaiBack },
+      }));
+
+      // Process payments
+      const newAllPayments = newPaymentsRaw.map(p => ({ ...p, kind: p.kind || 'tuition', createdAtMs: parseDT(p.createdAt) }));
+      const newTuitionPayments = newAllPayments.filter(p => p.kind === 'tuition');
+      const newRentals = newAllPayments.filter(p => p.kind === 'rental');
+
+      // Rebuild indexes
+      branchesById.clear(); branches.forEach(b => branchesById.set(b.id, b));
+      accountsById.clear(); accounts.forEach(a => accountsById.set(a.id, a));
+      classesById.clear(); newClasses.forEach(c => classesById.set(c.id, c));
+      studentsById.clear(); newStudents.forEach(s => studentsById.set(s.id, s));
+      feePlansById.clear(); feePlans.forEach(f => feePlansById.set(f.id, f));
+      promotionsById.clear(); promotions.forEach(p => promotionsById.set(p.id, p));
+      vehiclesById.clear(); vehicles.forEach(v => vehiclesById.set(v.id, v));
+
+      paymentsByStudentId.clear(); paymentsByBranchId.clear();
+      rentalsByStudentId.clear(); rentalsByVehicleId.clear();
+      for (const p of newTuitionPayments) { pushTo(paymentsByStudentId, p.studentId, p); pushTo(paymentsByBranchId, p.branchId, p); }
+      for (const r of newRentals) { pushTo(rentalsByStudentId, r.studentId, r); if (r.vehicleId) pushTo(rentalsByVehicleId, r.vehicleId, r); }
+      studentsByClassId.clear(); studentsByBranchId.clear();
+      for (const s of newStudents) { pushTo(studentsByClassId, s.classId, s); pushTo(studentsByBranchId, s.branchId, s); }
+
+      // Replace students + payments + rentals arrays
+      students.length = 0; students.push(...newStudents);
+      payments.length = 0; payments.push(...newTuitionPayments);
+      rentals.length = 0; rentals.push(...newRentals);
+
+      // Recompute derived fields for all students
+      students.forEach(recomputeDerived);
+
+      // Update promotions (norm appliesTo)
+      promotions.forEach(_normPromo);
+      accounts.forEach(a => { if (!Array.isArray(a.branchIds)) a.branchIds = []; if (!Array.isArray(a.classIds)) a.classIds = []; });
+      notifications.forEach(n => { if (n.detail == null) n.detail = n.message; });
+
+      // Update MGT_DATA scalar props
+      MGT_DATA.currentUserId = me.id;
+      MGT_DATA.permissions = mePerms;
+      MGT_DATA.PROFILE_DOCS = newProfileDocs;
+      MGT_DATA.NOW = NOW2;
+      MGT_DATA.TODAY = `${p2(NOW2.getDate())}/${p2(NOW2.getMonth() + 1)}/${NOW2.getFullYear()}`;
+
+      // Update the offline cache
+      try {
+        localStorage.setItem(_CACHE_KEY, JSON.stringify({
+          me, mePerms, branches, accounts, feePlans, promotions, teachers, vehicles,
+          classesRaw: newClassesRaw, studentsRaw: newStudentsRaw, paymentsRaw: newPaymentsRaw,
+          notifications, activityLog, profileDocs: newProfileDocs,
+        }));
+      } catch {}
+
+      window.dispatchEvent(new Event('mgt:datachanged'));
+    }
+
     const MGT_DATA = {
       branches, accounts, feePlans, promotions, teachers, vehicles,
       classes, students, payments, rentals, notifications, activityLog,
@@ -774,6 +928,9 @@
       api: {
         // AppRoot listens for 'mgt:datachanged' and re-renders after writes.
         _bump() { try { window.dispatchEvent(new Event('mgt:datachanged')); } catch {} },
+        // Background data refresh — re-fetches all endpoints and updates
+        // in place. Called by _probeReconnect after network recovery.
+        refreshAllData: _refreshAllData,
         // Generic CRUD helper for admin support tables; POST/PATCH/DELETEs
         // backend then patches the local array + byId map and _bumps.
         async _crud(op, path, arr, byId, opts = {}) {
@@ -976,15 +1133,19 @@
         async logout() {
           try { await api('/auth/logout', { method: 'POST' }); } catch {}
           window.MGT_TOKEN = null; try { window.MGT_CLEAR_TOKEN && await window.MGT_CLEAR_TOKEN(); } catch {}
-          // Clear all per-user caches so the next account doesn't inherit stale data.
-          try { localStorage.removeItem(_CACHE_KEY); } catch {}
-          try { localStorage.removeItem('mgt_guest_add_draft'); } catch {}
+          // Clear all snapshot caches (all users) — scoped keys prevent
+          // cross-user leakage, but on explicit logout we clean up fully.
+          _clearAllSnapshotCaches();
+          // Clear current user's drafts (text + photos).
+          try { localStorage.removeItem('mgt_guest_add_draft_' + (me?.id || '')); } catch {}
           try {
             await new Promise(resolve => {
-              const req = indexedDB.deleteDatabase('mgt_guest_draft');
+              const req = indexedDB.deleteDatabase('mgt_guest_draft_' + (me?.id || ''));
               req.onsuccess = req.onerror = req.onblocked = () => resolve();
             });
           } catch {}
+          // Broadcast logout to other tabs so they reload too.
+          try { new BroadcastChannel('mgt-auth').postMessage({ type: 'logout' }); } catch {}
           window.location.reload();
         },
       },
@@ -1008,6 +1169,7 @@
   let _lastProbe = 0;
   async function _probeReconnect() {
     if (!window._MGT_OFFLINE) return;
+    if (!window.MGT_TOKEN) return;  // don't probe after logout
     const now = Date.now();
     if (now - _lastProbe < 5000) return;  // debounce — max once per 5s
     _lastProbe = now;
@@ -1015,7 +1177,14 @@
       await api('/me');
       window._MGT_OFFLINE = false;
       window.dispatchEvent(new Event('mgt:connectivity'));
-      if (window.MGT_TOAST) window.MGT_TOAST('Đã khôi phục kết nối — có thể tải ảnh và lưu dữ liệu.', { ms: 3000 });
+      // Background refresh — update data without a page reload so the
+      // user keeps their scroll position, open forms, and context.
+      if (window.MGT_DATA?.api?.refreshAllData) {
+        if (window.MGT_TOAST) window.MGT_TOAST('Đã khôi phục kết nối — đang cập nhật dữ liệu...', { ms: 2500 });
+        window.MGT_DATA.api.refreshAllData().catch(() => {});
+      } else {
+        if (window.MGT_TOAST) window.MGT_TOAST('Đã khôi phục kết nối.', { ms: 3000 });
+      }
     } catch (e) {
       // Token expired while offline — reload so login overlay appears.
       // Do NOT clear caches here: on choppy networks the probe may fire
@@ -1028,4 +1197,60 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') _probeReconnect();
   });
+
+  // ── Background data polling ────────────────────────────────────────
+  // Periodically checks if data has changed on the server and refreshes
+  // in the background. Keeps the dashboard fresh without manual reload.
+  // Only polls when tab is visible and app is online.
+  let _lastPoll = 0;
+  let _pollBusy = false;
+  const _POLL_INTERVAL = 120000; // 120 seconds
+  async function _pollRefresh() {
+    if (_pollBusy) return;
+    if (window._MGT_OFFLINE) return;
+    if (!window.MGT_TOKEN) return;
+    if (document.visibilityState !== 'visible') return;
+    const now = Date.now();
+    if (now - _lastPoll < _POLL_INTERVAL) return;
+    _lastPoll = now;
+    // Snapshot current counts to detect changes.
+    const D = window.MGT_DATA;
+    if (!D || !D.students || !D.payments) return;
+    const prevStudentCount = D.students.length;
+    const prevPaymentCount = D.payments.length;
+    try {
+      await api('/me'); // heartbeat — validates token is still alive
+      _pollBusy = true;
+      await D.api.refreshAllData();
+      // Show toast only if data actually changed.
+      if (D.students.length !== prevStudentCount || D.payments.length !== prevPaymentCount) {
+        if (window.MGT_TOAST) window.MGT_TOAST('Dữ liệu đã cập nhật.', { ms: 2500 });
+      }
+    } catch {}
+    finally { _pollBusy = false; }
+  }
+  // Check on visibility change + interval timer.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') _pollRefresh();
+  });
+  setInterval(_pollRefresh, _POLL_INTERVAL);
+
+  // ── Multi-tab coordination ────────────────────────────────────────
+  // When a different user logs in on another tab, this tab reloads to
+  // prevent cross-user data visibility. Same user = no disruption.
+  try {
+    const _authChannel = new BroadcastChannel('mgt-auth');
+    _authChannel.onmessage = (e) => {
+      const { type, userId } = e.data || {};
+      if (type === 'logout') { window.location.reload(); return; }
+      if (type === 'login' && userId) {
+        const myId = window.MGT_DATA?.currentUserId;
+        if (myId && userId !== myId) window.location.reload();
+      }
+    };
+    // Broadcast our login so other tabs can react.
+    window._mgtBroadcastLogin = (userId) => {
+      try { _authChannel.postMessage({ type: 'login', userId }); } catch {}
+    };
+  } catch {}
 })();

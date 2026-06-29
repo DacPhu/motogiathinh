@@ -4,6 +4,61 @@
 //         AddClass
 // ====================================================================
 
+// ── Draft auto-save helpers ────────────────────────────────────────
+// Saves form state to localStorage so slow/elderly users don't lose
+// typed data on accidental close, app kill, or network interruption.
+// Keyed per user to prevent cross-user draft leakage on shared devices.
+function _draftKey(suffix) {
+  const userId = window.MGT_DATA?.currentUser?.id || 'anon';
+  return `mgt_admin_${suffix}_draft_${userId}`;
+}
+function _draftSave(key, data) {
+  try { localStorage.setItem(key, JSON.stringify(data)); } catch {}
+}
+function _draftLoad(key) {
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+function _draftClear(key) {
+  try { localStorage.removeItem(key); } catch {}
+}
+
+// Debounced auto-save hook — watches a form object and saves to
+// localStorage after 1s of inactivity. Restores on open.
+function _useDraft(draftSuffix, open, form, setForm) {
+  const key = _draftKey(draftSuffix);
+  const timerRef = React.useRef(null);
+
+  // Restore draft when modal opens.
+  React.useEffect(() => {
+    if (open) {
+      const draft = _draftLoad(key);
+      if (draft && typeof draft === 'object') setForm(prev => ({ ...prev, ...draft }));
+    }
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced save on form change.
+  React.useEffect(() => {
+    if (!open) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => _draftSave(key, form), 1000);
+    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
+  }, [form, open]);
+
+  return key; // return key so submit handler can clear it
+}
+
+// beforeunload guard — warns before closing tab with unsaved modal data.
+let _activeDraftKeys = [];
+function _registerDraft(key) { _activeDraftKeys.push(key); _updateBeforeunload(); }
+function _unregisterDraft(key) { _activeDraftKeys = _activeDraftKeys.filter(k => k !== key); _updateBeforeunload(); }
+function _updateBeforeunload() {
+  if (_activeDraftKeys.length > 0) {
+    window.onbeforeunload = () => 'Bạn có thay đổi chưa lưu. Đóng trang sẽ mất dữ liệu.';
+  } else {
+    window.onbeforeunload = null;
+  }
+}
+
 // --------------------------------------------------------------------
 // Add Student Modal — the demo centerpiece
 // --------------------------------------------------------------------
@@ -20,6 +75,14 @@ function AddStudentModal({ open, onClose, onSave }) {
   const [docFiles, setDocFiles] = React.useState({});
   const [qrToast, setQrToast] = React.useState(null);    // null | {msg, kind}
   const [qrBusy,  setQrBusy]  = React.useState(false);
+
+  // Auto-save form draft to localStorage (debounced 1s).
+  const _draftKey = _useDraft('student', open, form, setForm);
+
+  // Register/unregister beforeunload guard while modal is open with data.
+  React.useEffect(() => {
+    if (open && form.name) { _registerDraft(_draftKey); return () => _unregisterDraft(_draftKey); }
+  }, [open, form.name]);
 
   // Drop a doc → mark filled, stash the File, and for the QR slot
   // specifically scan the CCCD QR locally via window.MGT_QR. Returned
@@ -125,7 +188,7 @@ function AddStudentModal({ open, onClose, onSave }) {
   return (
     <Modal open={open} onClose={onClose} width={880}
            primaryLabel="Lưu học viên"
-           primaryAction={() => { onSave && onSave({ form, docs, profileComplete, docFiles }); onClose(); }}
+           primaryAction={() => { onSave && onSave({ form, docs, profileComplete, docFiles }); _draftClear(_draftKey); _unregisterDraft(_draftKey); onClose(); }}
            primaryDisabled={
              qrBusy  /* wait for QR scan + address conversion before saving */
              || !form.name || !form.classId || !form.responsibleStaffId
@@ -297,17 +360,31 @@ function AddPaymentModal({ open, onClose, onSave, defaultStudentId, defaultAmoun
   // check is synchronous and blocks duplicate POSTs.
   const busyRef = React.useRef(false);
 
+  // Auto-save form draft to localStorage (debounced 1s).
+  const _pDraftKey = _useDraft('payment', open, form, setForm);
+
+  // Track whether a draft was restored so we don't overwrite it with defaults.
+  const _hadDraft = React.useRef(false);
   React.useEffect(() => {
     if (open) {
-      setForm({
-        studentId: defaultStudentId || "",
-        amount: defaultAmount != null ? String(defaultAmount) : "",
-        method: "", bienLaiId: "",
-      });
+      const draft = _draftLoad(_pDraftKey);
+      _hadDraft.current = !!(draft && draft.studentId);
+      if (!_hadDraft.current) {
+        setForm({
+          studentId: defaultStudentId || "",
+          amount: defaultAmount != null ? String(defaultAmount) : "",
+          method: "", bienLaiId: "",
+        });
+      }
       setBusy(false); setErr(null); busyRef.current = false;
     }
-    if (!open) { setBienLaiPhoto(false); setBienLaiFile(null); }
+    if (!open) { setBienLaiPhoto(false); setBienLaiFile(null); _hadDraft.current = false; }
   }, [open, defaultStudentId, defaultAmount]);
+
+  // Register/unregister beforeunload guard while modal is open with data.
+  React.useEffect(() => {
+    if (open && form.studentId) { _registerDraft(_pDraftKey); return () => _unregisterDraft(_pDraftKey); }
+  }, [open, form.studentId]);
 
   const student = form.studentId ? D.getStudent(form.studentId) : null;
   const amount = parseInt(form.amount.replace(/\D/g, ""), 10) || 0;
@@ -329,6 +406,7 @@ function AddPaymentModal({ open, onClose, onSave, defaultStudentId, defaultAmoun
     try {
       setBusy(true); setErr(null);
       await (onSave && onSave({ ...form, amount, bienLaiPhoto, bienLaiFile }));
+      _draftClear(_pDraftKey); _unregisterDraft(_pDraftKey);
       onClose();
     } catch (e) {
       setErr(e?.message || String(e));
@@ -541,16 +619,27 @@ function AddClassModal({ open, onClose, onSave }) {
   const [err, setErr]   = React.useState(null);
   // Synchronous double-submit guard — see AddPaymentModal for rationale.
   const busyRef = React.useRef(false);
+
+  // Auto-save form draft to localStorage (debounced 1s).
+  const _cDraftKey = _useDraft('class', open, form, setForm);
+
   React.useEffect(() => {
     if (!open) setForm({ code: "", openDate: "", examDate: "", branchId: "" });
     if (open) { setBusy(false); setErr(null); busyRef.current = false; }
   }, [open]);
+
+  // Register/unregister beforeunload guard while modal is open with data.
+  React.useEffect(() => {
+    if (open && form.code) { _registerDraft(_cDraftKey); return () => _unregisterDraft(_cDraftKey); }
+  }, [open, form.code]);
+
   const submit = async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     try {
       setBusy(true); setErr(null);
       await (onSave && onSave(form));
+      _draftClear(_cDraftKey); _unregisterDraft(_cDraftKey);
       onClose();
     } catch (e) {
       setErr(e?.message || String(e));

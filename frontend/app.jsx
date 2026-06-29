@@ -308,10 +308,18 @@ function Boot() {
   const [ready, setReady] = React.useState(!!window.MGT_DATA);
   const [error, setError] = React.useState(null);
   const [offline, setOffline] = React.useState(!!window._MGT_OFFLINE);
+  const [autoRetried, setAutoRetried] = React.useState(false);
   React.useEffect(() => {
     if (ready) return;
     if (!window.MGT_DATA_READY) { setError(new Error("MGT_DATA_READY not found — data-loader.js failed to register")); return; }
-    window.MGT_DATA_READY.then(() => setReady(true)).catch(setError);
+    window.MGT_DATA_READY.then(() => setReady(true)).catch((e) => {
+      setError(e);
+      // Auto-retry once after 3 seconds for transient network issues.
+      if (!autoRetried) {
+        setAutoRetried(true);
+        setTimeout(() => { window.location.reload(); }, 3000);
+      }
+    });
   }, []);   // eslint-disable-line
   React.useEffect(() => {
     const fn = () => setOffline(!!window._MGT_OFFLINE);
@@ -326,6 +334,15 @@ function Boot() {
       }}>
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--neon-pink)" }}>Không thể tải dữ liệu</span>
         <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, color: "var(--fg-2)" }}>Ứng dụng không kết nối được đến máy chủ. Kiểm tra kết nối internet rồi mở lại trang.</span>
+        {!autoRetried ? (
+          <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-3)", marginTop: 4 }}>Đang thử lại tự động…</span>
+        ) : (
+          <button onClick={() => window.location.reload()} style={{
+            marginTop: 8, padding: "8px 20px", borderRadius: 8, border: "1px solid var(--glass-stroke)",
+            background: "var(--glass-2)", color: "var(--fg-1)", fontFamily: "var(--font-ui)",
+            fontSize: 13, fontWeight: 600, cursor: "pointer",
+          }}>Thử lại</button>
+        )}
       </div>
     );
   }

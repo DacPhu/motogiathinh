@@ -60,15 +60,21 @@ function gPickPhoto() {
 // Persists picked photos across accidental closes / app kills.
 // Text fields already use localStorage; photos need IndexedDB (File
 // objects are Blobs — localStorage can't hold them).
-const _DB_NAME = 'mgt_guest_draft';
+// Database name is scoped to the current user to prevent cross-user
+// photo leakage on shared devices.
 const _DB_STORE = 'photos';
 const _DB_VERSION = 1;
 const _DRAFT_MAX_FILE = 5 * 1024 * 1024; // 5MB per file (iOS WKWebView ~50MB budget)
 let _draftWarned = false;  // toast once per session, not per pick
 
+function _getDbName() {
+  const userId = window.MGT_DATA?.currentUser?.id || 'anon';
+  return `mgt_guest_draft_${userId}`;
+}
+
 function _openDraftDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(_DB_NAME, _DB_VERSION);
+    const req = indexedDB.open(_getDbName(), _DB_VERSION);
     req.onupgradeneeded = () => { try { req.result.createObjectStore(_DB_STORE); } catch {} };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -660,7 +666,7 @@ function GuestAddStudentModal({ open, onClose }) {
   const qrErrTimerRef = React.useRef(null); // debounced error display
   React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
-  const DRAFT_KEY = "mgt_guest_add_draft";
+  const DRAFT_KEY = `mgt_guest_add_draft_${window.MGT_DATA?.currentUser?.id || 'anon'}`;
 
   // Detect a duplicate CCCD already in the system for the given idNumber.
   const isDuplicateCccd = React.useCallback((idNumber) => {
