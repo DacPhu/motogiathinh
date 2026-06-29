@@ -45,9 +45,19 @@ def upgrade() -> None:
     # Step 4: Create the new enum with only A and A1
     op.execute("CREATE TYPE licensetype AS ENUM ('A1', 'A')")
 
-    # Step 5: Convert columns back to the new enum type
+    # Step 5: Convert columns back to the new enum type.
+    # Any remaining old values (B1, B2, C, D, E, F) that weren't caught by the
+    # A2→A update are defaulted to 'A'. The USING clause tells PostgreSQL how
+    # to cast each row's VARCHAR value into the new ENUM.
     for t in _TABLES:
-        op.alter_column(t, "loai_bang_lai", type_=_NEW_ENUM, existing_type=sa.String(2), nullable=False)
+        op.execute(
+            f"UPDATE {t} SET loai_bang_lai = 'A' "
+            f"WHERE loai_bang_lai NOT IN ('A1', 'A')"
+        )
+        op.execute(
+            f"ALTER TABLE {t} ALTER COLUMN loai_bang_lai TYPE licensetype "
+            f"USING loai_bang_lai::licensetype"
+        )
 
 
 def downgrade() -> None:
@@ -65,4 +75,7 @@ def downgrade() -> None:
 
     # Convert back to old enum
     for t in _TABLES:
-        op.alter_column(t, "loai_bang_lai", type_=_OLD_ENUM, existing_type=sa.String(2), nullable=False)
+        op.execute(
+            f"ALTER TABLE {t} ALTER COLUMN loai_bang_lai TYPE licensetype "
+            f"USING loai_bang_lai::licensetype"
+        )
