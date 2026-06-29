@@ -161,4 +161,31 @@
       }
     }
   };
+
+  // ── Back button (Android hardware back / gesture navigation) ─────
+  //
+  // MAPPING POLICY — Android back button:
+  //   ✓ Close add-student modal      → popstate → setAddOpen(false)
+  //   ✓ Navigate back (detail → list) → popstate → setViewingId(null)
+  //   ✓ Dismiss camera overlay        → native ScannerActivity owns its lifecycle
+  //   ✗ Exit from home screen         → BLOCKED (too disruptive on shared device)
+  //   ✗ Undo student/payment creation → irreversible, never map
+  //
+  // MAPPING POLICY — iPhone left-edge swipe (web-level touch gesture):
+  //   ✓ Navigate back (detail → list) → same as Android back
+  //   ✗ Close modal                   → feels wrong — modal was opened by
+  //                                      explicit tap, not navigation push
+  //   ✗ Exit to login                 → same as Android: too disruptive
+  //   ✗ Dismiss camera                → camera has its own cancel button;
+  //                                      swipe-from-edge conflicts with
+  //                                      camera pan/gesture area
+  var _appPlugin = P.App;
+  if (_appPlugin && typeof _appPlugin.addListener === "function") {
+    _appPlugin.addListener("backButton", function () {
+      // Web popstate handler (screen-guest.jsx) already closes modals + detail.
+      // At root nothing is pushed — prevent Capacitor's default exit.
+      if (window.history.length <= 1) return;
+      window.history.back();
+    });
+  }
 })();

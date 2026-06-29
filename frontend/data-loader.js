@@ -123,11 +123,12 @@
     }
     const res = await fetch(API + path, {
       credentials: 'include',
+      cache: 'no-store',
       headers: { 'Content-Type': 'application/json', ...(window.MGT_TOKEN ? { Authorization: 'Bearer ' + window.MGT_TOKEN } : {}), ...(opts.headers || {}) },
       ...opts,
       body: opts.body && typeof opts.body !== 'string' ? JSON.stringify(opts.body) : opts.body,
     });
-    if (res.status === 401 && path !== '/me') { window.location.reload(); throw new Error('auth_required'); }
+    if (res.status === 401 && path !== '/me') { try { localStorage.removeItem(_CACHE_KEY); } catch {} window.location.reload(); throw new Error('auth_required'); }
     if (!res.ok) {
       let detail = ''; try { detail = JSON.stringify(await res.json()); } catch {}
       throw new Error(_humanError({ message: `${res.status} ${path} ${detail}` }, 'api'));
@@ -975,6 +976,15 @@
         async logout() {
           try { await api('/auth/logout', { method: 'POST' }); } catch {}
           window.MGT_TOKEN = null; try { window.MGT_CLEAR_TOKEN && await window.MGT_CLEAR_TOKEN(); } catch {}
+          // Clear all per-user caches so the next account doesn't inherit stale data.
+          try { localStorage.removeItem(_CACHE_KEY); } catch {}
+          try { localStorage.removeItem('mgt_guest_add_draft'); } catch {}
+          try {
+            await new Promise(resolve => {
+              const req = indexedDB.deleteDatabase('mgt_guest_draft');
+              req.onsuccess = req.onerror = req.onblocked = () => resolve();
+            });
+          } catch {}
           window.location.reload();
         },
       },
@@ -1006,7 +1016,13 @@
       window._MGT_OFFLINE = false;
       window.dispatchEvent(new Event('mgt:connectivity'));
       if (window.MGT_TOAST) window.MGT_TOAST('Đã khôi phục kết nối — có thể tải ảnh và lưu dữ liệu.', { ms: 3000 });
-    } catch {}  // still offline — keep the flag
+    } catch (e) {
+      // Token expired while offline — reload so login overlay appears.
+      // Do NOT clear caches here: on choppy networks the probe may fire
+      // repeatedly, and wiping drafts each time would destroy in-progress work.
+      if (/auth_required|401/.test(String(e?.message || ''))) { window.location.reload(); return; }
+      // else: still offline — keep the flag
+    }
   }
   window.addEventListener('online', _probeReconnect);
   document.addEventListener('visibilitychange', () => {

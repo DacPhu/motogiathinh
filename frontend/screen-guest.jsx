@@ -172,6 +172,46 @@ function GuestApp() {
     else setViewingId(null);
   }, []);
 
+  // ---- Touch gestures: left-edge swipe (back) + long pull-down (refresh) ----
+  const [refreshing, setRefreshing] = React.useState(false);
+  const touchRef = React.useRef({ startX: 0, startY: 0, maxDy: 0, time: 0 });
+
+  const onMainTouchStart = React.useCallback((e) => {
+    const t = e.touches[0];
+    touchRef.current = { startX: t.clientX, startY: t.clientY, maxDy: 0, time: Date.now() };
+  }, []);
+
+  const onMainTouchMove = React.useCallback((e) => {
+    const t = e.touches[0];
+    touchRef.current.maxDy = Math.max(touchRef.current.maxDy, t.clientY - touchRef.current.startY);
+  }, []);
+
+  const onMainTouchEnd = React.useCallback((e) => {
+    if (refreshing) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - touchRef.current.startX;
+    const maxDy = touchRef.current.maxDy;
+    const dt = Date.now() - touchRef.current.time;
+    const startX = touchRef.current.startX;
+
+    // Left-edge swipe → navigate back (detail → list only).
+    // Start must be within 20px of left border, swipe > 80px right,
+    // and mostly horizontal. NOT mapped to: close modal (wrong gesture),
+    // exit to login (too destructive), dismiss camera (own cancel UI).
+    if (viewingId && startX < 20 && dx > 80 && Math.abs(t.clientY - touchRef.current.startY) < dx) {
+      backToList();
+      return;
+    }
+
+    // Long pull-down on list → refresh connection.
+    // Requires > 80px pull AND > 500ms hold to prevent accidental triggers.
+    if (!viewingId && maxDy > 80 && dt > 500) {
+      setRefreshing(true);
+      gToast("Đang cập nhật...", "info");
+      setTimeout(() => window.location.reload(), 300);
+    }
+  }, [refreshing, viewingId, backToList]);
+
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column",
                   alignItems: "center", background: "var(--ink-1)" }}>
@@ -214,7 +254,11 @@ function GuestApp() {
           </>)}
         </header>
 
-        <main style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 18px 32px" }}>
+        <main style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 18px",
+                       paddingBottom: "env(safe-area-inset-bottom, 34px)" }}
+              onTouchStart={onMainTouchStart}
+              onTouchMove={onMainTouchMove}
+              onTouchEnd={onMainTouchEnd}>
           {viewing ? (
             <div key={viewingId} style={{ animation: "mgt-slide-in-right 260ms cubic-bezier(0.22, 1, 0.36, 1) both" }}>
               <GuestStudentDetail student={viewing} onBack={backToList}/>
@@ -349,9 +393,11 @@ function GuestStudentDetail({ student, onBack }) {
   const busyRef = React.useRef(false);
   const retryBusyRef = React.useRef(false);
   const mountedRef = React.useRef(true);
+  const scanGenRef = React.useRef(0);   // generation counter — prevents stale scan results
+  const qrErrTimerRef = React.useRef(null); // debounced error display
   const ex = student.docs || {};
 
-  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; if (qrErrTimerRef.current) { clearTimeout(qrErrTimerRef.current); qrErrTimerRef.current = null; } }; }, []);
 
   const fieldsDirty = (phone !== (student.phone || "")) || (licence !== (student.licence || ""));
   const otherPhotosDirty = !!(newFiles.cccd || newFiles.cccdBack || newFiles.the3x4 || newFiles.bangLaiFront || newFiles.bangLaiBack);
@@ -375,17 +421,23 @@ function GuestStudentDetail({ student, onBack }) {
 
   const scanQr = async (file, preDecoded = null) => {
     setNewFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
+    const myGen = ++scanGenRef.current;
+    if (qrErrTimerRef.current) { clearTimeout(qrErrTimerRef.current); qrErrTimerRef.current = null; }
     setQrBusy(true); setQrErr(null); setQrInfo(null);
     try {
       let out;
       if (preDecoded && preDecoded.fields && preDecoded.fields.idNumber) {
         out = { ok: true, fields: preDecoded.fields, raw: preDecoded.raw };
       } else if (file) {
-        out = await window.MGT_QR.scanFile(file);
+        out = await Promise.race([
+          window.MGT_QR.scanFile(file),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("scan_timeout")), 15000)),
+        ]);
       } else {
         throw new Error("qr");
       }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
+      if (scanGenRef.current !== myGen) return; // stale — a newer scan is running
       out.fields.qrRaw = out.raw;
       setQrInfo(out.fields);
       if (file) {
@@ -395,8 +447,15 @@ function GuestStudentDetail({ student, onBack }) {
         gToast("Quét thành công nhưng ảnh QR chưa lưu được. Bấm vào ô QR để chụp lại.", "info");
       }
     } catch (e) {
-      setQrErr("Không đọc được mã QR. Hãy giữ yên, chụp lại ảnh rõ nét hơn.");
-    } finally { setQrBusy(false); }
+      if (scanGenRef.current !== myGen) return; // stale — don't show error from an old scan
+      setQrInfo(null); // clear stale QR badge so user sees a clean state
+      // Debounce: show error only after 1000ms so a quick retry or later scanner layer
+      // can cancel it before the user sees it.
+      qrErrTimerRef.current = setTimeout(() => {
+        if (scanGenRef.current === myGen) setQrErr("Không đọc được mã QR. Hãy giữ yên, chụp lại ảnh rõ nét hơn.");
+        qrErrTimerRef.current = null;
+      }, 1000);
+    } finally { if (scanGenRef.current === myGen) setQrBusy(false); }
   };
 
   // Task 7: canSubmit allows retry when there are pending uploads
@@ -597,6 +656,8 @@ function GuestAddStudentModal({ open, onClose }) {
   const busyRef = React.useRef(false);
   const retryBusyRef = React.useRef(false);
   const mountedRef = React.useRef(true);
+  const scanGenRef = React.useRef(0);   // generation counter — prevents stale scan results
+  const qrErrTimerRef = React.useRef(null); // debounced error display
   React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
 
   const DRAFT_KEY = "mgt_guest_add_draft";
@@ -637,6 +698,7 @@ function GuestAddStudentModal({ open, onClose }) {
       })();
     } else if (!open && wasOpen) {
       // Closing — save text fields + qrInfo so an accidental exit is recoverable.
+      if (qrErrTimerRef.current) { clearTimeout(qrErrTimerRef.current); qrErrTimerRef.current = null; }
       try {
         localStorage.setItem(DRAFT_KEY, JSON.stringify({ name, phone, licence, classId, qrInfo }));
       } catch {}
@@ -653,17 +715,23 @@ function GuestAddStudentModal({ open, onClose }) {
 
   const scanQr = async (file, preDecoded = null) => {
     setDocFiles(prev => { const { cccdQR, ...rest } = prev; return rest; });
+    const myGen = ++scanGenRef.current;
+    if (qrErrTimerRef.current) { clearTimeout(qrErrTimerRef.current); qrErrTimerRef.current = null; }
     setQrBusy(true); setQrErr(null);
     try {
       let out;
       if (preDecoded && preDecoded.fields && preDecoded.fields.idNumber) {
         out = { ok: true, fields: preDecoded.fields, raw: preDecoded.raw };
       } else if (file) {
-        out = await window.MGT_QR.scanFile(file);
+        out = await Promise.race([
+          window.MGT_QR.scanFile(file),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("scan_timeout")), 15000)),
+        ]);
       } else {
         throw new Error("qr");
       }
       if (!out || !out.ok || !out.fields || !out.fields.idNumber) throw new Error("qr");
+      if (scanGenRef.current !== myGen) return; // stale — a newer scan is running
       out.fields.qrRaw = out.raw;
       setQrInfo(out.fields);
       setName(out.fields.name || "");
@@ -675,9 +743,15 @@ function GuestAddStudentModal({ open, onClose }) {
       }
       setDupErr(isDuplicateCccd(out.fields.idNumber) ? "CCCD này đã có hồ sơ trong hệ thống." : null);
     } catch (e) {
+      if (scanGenRef.current !== myGen) return; // stale — don't show error from an old scan
       setQrInfo(null); setName(""); setDupErr(null);
-      setQrErr("Không đọc được mã QR. Giữ yên điện thoại, chụp lại ảnh rõ nét hơn.");
-    } finally { setQrBusy(false); }
+      // Debounce: show error only after 1000ms so a quick retry or later scanner layer
+      // can cancel it before the user sees it.
+      qrErrTimerRef.current = setTimeout(() => {
+        if (scanGenRef.current === myGen) setQrErr("Không đọc được mã QR. Giữ yên điện thoại, chụp lại ảnh rõ nét hơn.");
+        qrErrTimerRef.current = null;
+      }, 1000);
+    } finally { if (scanGenRef.current === myGen) setQrBusy(false); }
   };
 
   // Required fields (bangLai OPTIONAL). Phone must be a full 10 digits.

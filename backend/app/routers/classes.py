@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser, accessible_class_ids, require_permission
 from app.models.branch import Branch
 from app.models.class_model import Class, ClassEnrollment
 from app.models.course import CourseType
@@ -73,6 +73,11 @@ async def list_classes(current_user: CurrentUser, db: DB):
         if not current_user.assigned_class_id:
             return []
         query = query.where(Class.id == current_user.assigned_class_id)
+    elif current_user.role == RoleName.collaborator:
+        acc = await accessible_class_ids(db, current_user)
+        if not acc:
+            return []
+        query = query.where(Class.id.in_(acc))
     elif current_user.role != RoleName.admin and current_user.branch_id:
         query = query.where(Class.branch_id == current_user.branch_id)
     result = await db.execute(query)
@@ -84,6 +89,11 @@ async def list_classes(current_user: CurrentUser, db: DB):
 async def get_class_students(class_id: str, current_user: CurrentUser, db: DB):
     try: c_uuid = uuid.UUID(class_id)
     except ValueError: raise HTTPException(400, "invalid_id")
+    # CTV access check — can only view students in their assigned active classes.
+    if current_user.role == RoleName.collaborator:
+        acc = await accessible_class_ids(db, current_user)
+        if not acc or c_uuid not in acc:
+            raise HTTPException(403, "access_denied")
     result = await db.execute(
         select(Student).join(ClassEnrollment, ClassEnrollment.student_id == Student.id)
         .where(ClassEnrollment.class_id == c_uuid, ClassEnrollment.deleted_at.is_(None), Student.deleted_at.is_(None))

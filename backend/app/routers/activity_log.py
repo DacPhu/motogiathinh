@@ -35,7 +35,12 @@ async def list_activity_log(
         .order_by(AuditLog.created_at.desc())
         .limit(500)
     )
-    if current_user.role != RoleName.admin:
+    if current_user.role == RoleName.collaborator:
+        if current_user.branch_id:
+            query = query.where(AuditLog.branch_id == current_user.branch_id)
+        else:
+            return []
+    elif current_user.role != RoleName.admin:
         query = query.where(AuditLog.branch_id == current_user.branch_id)
     result = await db.execute(query)
     return [_to_wire(a) for a in result.scalars().all()]

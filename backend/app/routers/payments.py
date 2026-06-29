@@ -10,9 +10,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from app.core.storage import upload_bytes
-from app.dependencies import DB, CurrentUser, require_permission
+from app.dependencies import DB, CurrentUser, accessible_class_ids, require_permission
 from app.models.branch import Branch
 from app.models.enums import PaymentMethod, PaymentStatus, RoleName
+from app.models.class_model import ClassEnrollment
 from app.models.payment import Payment
 from app.models.student import Student
 from app.models.vehicle import Vehicle
@@ -51,7 +52,19 @@ async def _slug_map(db) -> dict:
 async def list_payments(current_user: CurrentUser, db: DB):
     # No LIMIT — must match /api/students; capping orphans payment.studentId.
     query = select(Payment).where(Payment.deleted_at.is_(None)).order_by(Payment.collected_at.desc())
-    if current_user.role != RoleName.admin and current_user.branch_id:
+    if current_user.role == RoleName.collaborator:
+        acc = await accessible_class_ids(db, current_user)
+        if not acc:
+            return []
+        enrolled_subq = (
+            select(ClassEnrollment.student_id)
+            .where(
+                ClassEnrollment.class_id.in_(acc),
+                ClassEnrollment.deleted_at.is_(None),
+            )
+        )
+        query = query.where(Payment.student_id.in_(enrolled_subq))
+    elif current_user.role != RoleName.admin and current_user.branch_id:
         query = query.where(Payment.branch_id == current_user.branch_id)
     result = await db.execute(query)
     slug_map = await _slug_map(db)
@@ -150,5 +163,11 @@ async def upload_bien_lai(
     object_key = f"payments/{payment_id}/bienlai-{int(datetime.now(timezone.utc).timestamp()*1000)}.{ext}"
     url = upload_bytes(object_key, content, content_type=file.content_type or "application/octet-stream")
     p.bien_lai_photo_url = url
+    from app.services.audit_service import log_action
+    await log_action(
+        db, user_id=current_user.id, branch_id=current_user.branch_id,
+        user_role=current_user.role.value, action="payment.bien_lai_upload",
+        resource="payment", resource_id=p.id, new_values={"url": url},
+    )
     await db.commit()
     return {"ok": True, "url": url, "size": len(content)}

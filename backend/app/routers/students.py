@@ -12,6 +12,7 @@ from typing import Annotated, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from app.dependencies import DB, CurrentUser, accessible_class_ids, assigned_class_ids, require_permission
 from app.models.branch import Branch
@@ -326,7 +327,11 @@ async def create_student(
         enrollment_date=date.today(), is_active=True,
     )
     db.add(enroll)
-    cls.so_luong_hien_tai = (cls.so_luong_hien_tai or 0) + 1
+    from sqlalchemy import update as sa_update
+    await db.execute(
+        sa_update(Class).where(Class.id == cls.id)
+        .values(so_luong_hien_tai=Class.so_luong_hien_tai + 1)
+    )
 
     from app.services.audit_service import log_action
     await log_action(
@@ -334,7 +339,11 @@ async def create_student(
         user_role=current_user.role.value, action="student.create",
         resource="student", resource_id=s.id, new_values={"maHV": ma_hv},
     )
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, "duplicate_cccd")
     await db.refresh(s)
     slug_map = await _slug_map(db)
     out = _to_wire(s, slug_map)
@@ -398,8 +407,16 @@ async def update_student(
     if "notes" in fields:       s.ghi_chu = fields["notes"] or None
     if "profileComplete" in fields: s.profile_complete = fields["profileComplete"]
     if "responsibleStaffId" in fields:
-        try: s.responsible_staff_id = uuid.UUID(fields["responsibleStaffId"]) if fields["responsibleStaffId"] else None
-        except ValueError: s.responsible_staff_id = None
+        if current_user.role == RoleName.collaborator:
+            # CTVs can only assign/unassign themselves, not reassign to another user.
+            val = fields["responsibleStaffId"]
+            if val and val != str(current_user.id):
+                raise HTTPException(403, "cannot_reassign")
+            try: s.responsible_staff_id = uuid.UUID(val) if val else None
+            except ValueError: s.responsible_staff_id = None
+        else:
+            try: s.responsible_staff_id = uuid.UUID(fields["responsibleStaffId"]) if fields["responsibleStaffId"] else None
+            except ValueError: s.responsible_staff_id = None
     # Admin-only: feePlanId, promotionId
     if current_user.role == RoleName.admin:
         if "feePlanId" in fields:

@@ -91,6 +91,8 @@ def _enum_val(v) -> str:
 # ─── Dashboard PDF ──────────────────────────────────────────────────────────
 @router.get("/dashboard.pdf")
 async def dashboard_pdf(current_user: CurrentUser, db: DB):
+    if current_user.role not in (RoleName.admin, RoleName.staff):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="staff_only")
     from app.models.branch import Branch
 
     now = datetime.now(timezone.utc)
@@ -147,6 +149,8 @@ async def dashboard_pdf(current_user: CurrentUser, db: DB):
 # ─── 7-day PDF ──────────────────────────────────────────────────────────────
 @router.get("/data.pdf")
 async def data_pdf(current_user: CurrentUser, db: DB):
+    if current_user.role not in (RoleName.admin, RoleName.staff):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="staff_only")
     now   = datetime.now(timezone.utc)
     since = now - timedelta(days=7)
 
@@ -202,6 +206,8 @@ async def data_pdf(current_user: CurrentUser, db: DB):
 # ─── Full Excel (6 sheets) ──────────────────────────────────────────────────
 @router.get("/data.xlsx")
 async def data_xlsx(current_user: CurrentUser, db: DB):
+    if current_user.role not in (RoleName.admin, RoleName.staff):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="staff_only")
     from app.models.branch import Branch
 
     now_dt = datetime.now(timezone.utc)
