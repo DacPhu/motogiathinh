@@ -1,14 +1,29 @@
 from datetime import date
 
+from sqlalchemy import text
+
 from app.core.cache import CacheKeys, cache
 
 
-async def next_student_id(year: int | None = None) -> str:
+async def next_student_id(db, year: int | None = None) -> str:
     y = year or date.today().year
     key = CacheKeys.STUDENT_SEQ.format(year=y)
     seq = await cache.incr(key)
-    # Set expiry on first use (keys live for ~2 years to handle carryover)
     if seq == 1:
+        # Fresh counter — first use this year, or Redis was evicted (allkeys-lru)
+        # / reset. Reconcile against the real DB max so we never re-issue an
+        # existing ma_hoc_vien: a re-issued code collides on INSERT and would
+        # otherwise surface to the user as a misleading "duplicate CCCD".
+        res = await db.execute(
+            text("SELECT MAX(CAST(SUBSTRING(ma_hoc_vien FROM 7) AS INTEGER)) "
+                 "FROM students WHERE ma_hoc_vien ~ :pat"),
+            {"pat": f"^HV{y}[0-9]+$"},
+        )
+        db_seq = res.scalar() or 0
+        if db_seq >= seq:
+            seq = db_seq + 1
+            await cache.redis.set(key, seq)
+        # Keys live ~2 years to handle carryover.
         await cache.expire(key, 365 * 2 * 24 * 3600)
     return f"HV{y}{seq:04d}"
 

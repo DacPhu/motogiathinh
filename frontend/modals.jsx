@@ -62,7 +62,7 @@ function _updateBeforeunload() {
 // --------------------------------------------------------------------
 // Add Student Modal — the demo centerpiece
 // --------------------------------------------------------------------
-function AddStudentModal({ open, onClose, onSave }) {
+function AddStudentModal({ open, onClose }) {
   const D = window.MGT_DATA;
   const [form, setForm] = React.useState({
     name: "", gender: "", dob: "", idNumber: "", address: "", phone: "",
@@ -75,6 +75,18 @@ function AddStudentModal({ open, onClose, onSave }) {
   const [docFiles, setDocFiles] = React.useState({});
   const [qrToast, setQrToast] = React.useState(null);    // null | {msg, kind}
   const [qrBusy,  setQrBusy]  = React.useState(false);
+  // Submission gate — mirrors the CTV flow (screen-guest.jsx). The modal
+  // must NOT close into "success" until the student is created AND every
+  // attached doc has uploaded. Otherwise a flaky connection silently drops
+  // photos and the user thinks the profile saved complete.
+  //   result: null | { status:'partial'|'failed', studentId, failedKeys[], errMsg }
+  const [busy, setBusy]         = React.useState(false);
+  const [result, setResult]     = React.useState(null);
+  const [retryBusy, setRetryBusy] = React.useState(false);
+  // Synchronous double-submit guards — React state updates async, so a
+  // burst of clicks can race past `busy`. Refs block duplicate POSTs.
+  const busyRef = React.useRef(false);
+  const retryBusyRef = React.useRef(false);
 
   // Auto-save form draft to localStorage (debounced 1s).
   const _draftKey = _useDraft('student', open, form, setForm);
@@ -89,7 +101,7 @@ function AddStudentModal({ open, onClose, onSave }) {
   // fields populate the form, skipping any field the user already typed.
   const handleDocDrop = async (key, file) => {
     setDocs(prev => ({ ...prev, [key]: true }));
-    if (file) setDocFiles(prev => ({ ...prev, [key]: file }));
+    if (file) { setDocFiles(prev => ({ ...prev, [key]: file })); window.MGT_DRAFT_PHOTOS?.save('admin_new', key, file); }
     if (key !== "cccdQR" || !file) return;
     setQrBusy(true);
     setQrToast({ kind: "info", msg: "Đang đọc mã QR…" });
@@ -172,14 +184,102 @@ function AddStudentModal({ open, onClose, onSave }) {
   const allFieldsFilled = REQUIRED_FIELDS.every(k => form[k]);
   const profileComplete = docsComplete && allFieldsFilled;
 
-  // reset on close
+  // On OPEN: restore drafted photos from IndexedDB (text fields are
+  // restored by _useDraft). On CLOSE: reset transient React state — the
+  // IndexedDB photos persist so an accidental close is recoverable, and
+  // are only cleared on a full successful submit (see submit/retry).
+  // Mirrors the CTV flow in screen-guest.jsx.
+  const prevOpen = React.useRef(open);
   React.useEffect(() => {
-    if (!open) {
+    const wasOpen = prevOpen.current;
+    prevOpen.current = open;
+    if (open && !wasOpen) {
+      setBusy(false); setResult(null); setRetryBusy(false);
+      busyRef.current = false; retryBusyRef.current = false;
+      (async () => {
+        const load = window.MGT_DRAFT_PHOTOS?.load;
+        if (!load) return;
+        const files = {}, filled = {};
+        for (const d of (D.PROFILE_DOCS || [])) {
+          const f = await load('admin_new', d.key);
+          if (f) { files[d.key] = f; filled[d.key] = true; }
+        }
+        if (Object.keys(files).length) {
+          setDocFiles(prev => ({ ...prev, ...files }));
+          setDocs(prev => ({ ...prev, ...filled }));
+        }
+      })();
+    } else if (!open && wasOpen) {
       setForm({ name: "", gender: "", dob: "", idNumber: "", address: "", phone: "", noiTamTru: "", ngayCapCCCD: "", noiCapCCCD: "", notes: "", classId: "", feePlanId: "", promotionId: "", responsibleStaffId: "" });
       setDocs(Object.fromEntries((D.PROFILE_DOCS || []).map(d => [d.key, false])));
       setDocFiles({});
+      setBusy(false); setResult(null); setRetryBusy(false);
+      busyRef.current = false; retryBusyRef.current = false;
     }
-  }, [open]);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const docLabel = (key) => (D.PROFILE_DOCS || []).find(d => d.key === key)?.label || key;
+
+  // Submit — create the student, then upload every attached doc and
+  // COLLECT per-file results. The modal only closes (into success) when
+  // the student is created AND every attached photo uploaded. If any
+  // upload fails (flaky connection, partial receipt), we keep the modal
+  // open in a 'partial' state with retry — never a false success.
+  // Mirrors the CTV flow in screen-guest.jsx. Calls D.api directly so the
+  // studentId + docFiles stay in scope for retry.
+  const submit = async () => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true); setResult(null);
+    try {
+      let created;
+      try {
+        created = await D.api.createStudent({ form, docs, profileComplete });
+      } catch (e) {
+        setResult({ status: 'failed', studentId: null, failedKeys: [], errMsg: e?.message || 'Không thể tạo học viên. Kiểm tra lại thông tin rồi thử lại.' });
+        return;
+      }
+      // Student exists on the server now — drop the text draft.
+      _draftClear(_draftKey); _unregisterDraft(_draftKey);
+      // Upload every attached doc; collect failures rather than swallowing them.
+      const failedKeys = [];
+      for (const [key, file] of Object.entries(docFiles)) {
+        if (!file) continue;
+        try { await D.api.uploadStudentDoc(created.id, key, file); }
+        catch (e) { failedKeys.push(key); }
+      }
+      if (failedKeys.length === 0) {
+        window.MGT_DRAFT_PHOTOS?.clear('admin_new');  // full success — drop drafted photos
+        onClose();  // student + all photos landed
+      } else {
+        setResult({ status: 'partial', studentId: created.id, failedKeys, errMsg: null });
+      }
+    } finally {
+      busyRef.current = false; setBusy(false);
+    }
+  };
+
+  // Retry only the photos that failed — student already exists, so this
+  // never re-creates. Closes on full success; otherwise narrows failedKeys.
+  const retryFailedUploads = async () => {
+    if (retryBusyRef.current || !result?.studentId) return;
+    const keys = [...(result.failedKeys || [])];
+    if (!keys.length) return;
+    retryBusyRef.current = true; setRetryBusy(true);
+    try {
+      const stillFailed = [];
+      for (const key of keys) {
+        const file = docFiles[key];
+        if (!file) { stillFailed.push(key); continue; }
+        try { await D.api.uploadStudentDoc(result.studentId, key, file); }
+        catch (e) { stillFailed.push(key); }
+      }
+      if (stillFailed.length === 0) { window.MGT_DRAFT_PHOTOS?.clear('admin_new'); onClose(); }
+      else setResult(prev => prev ? { ...prev, failedKeys: stillFailed } : prev);
+    } finally {
+      retryBusyRef.current = false; setRetryBusy(false);
+    }
+  };
 
   const SectionTitle = ({ children }) => (
     <h3 style={{ margin: 0, fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 600, color: "var(--fg-1)", letterSpacing: "-0.015em" }}>{children}</h3>
@@ -187,14 +287,26 @@ function AddStudentModal({ open, onClose, onSave }) {
 
   return (
     <Modal open={open} onClose={onClose} width={880}
-           primaryLabel="Lưu học viên"
-           primaryAction={() => { onSave && onSave({ form, docs, profileComplete, docFiles }); _draftClear(_draftKey); _unregisterDraft(_draftKey); onClose(); }}
+           primaryLabel={busy ? "Đang lưu…" : "Lưu học viên"}
+           primaryAction={submit}
            primaryDisabled={
-             qrBusy  /* wait for QR scan + address conversion before saving */
+             busy
+             || qrBusy  /* wait for QR scan + address conversion before saving */
              || !form.name || !form.classId || !form.responsibleStaffId
              || !form.feePlanId  /* required so totalFee/balance can be tracked — SPEC §3 */
              || openClasses.length === 0
            }
+           footer={result?.status === 'partial' ? (
+             <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4 }}>
+               <span style={{ flex: 1, minWidth: 0, fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-amber)" }}>
+                 Hồ sơ đã lưu — còn {result.failedKeys.length} ảnh chưa tải lên.
+               </span>
+               <Button variant="ghost" onClick={() => { window.MGT_DRAFT_PHOTOS?.clear('admin_new'); onClose(); }}>Để sau</Button>
+               <Button variant="primary" onClick={retryFailedUploads} icon="upload" disabled={retryBusy}>
+                 {retryBusy ? "Đang tải…" : "Tải lại ảnh còn thiếu"}
+               </Button>
+             </div>
+           ) : undefined}
            footerStart={
              openClasses.length === 0 ? (
                <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--neon-pink)" }}>
@@ -211,6 +323,31 @@ function AddStudentModal({ open, onClose, onSave }) {
              ) : null
            }>
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* Upload-failure banners. 'failed' = create itself failed (no
+            student). 'partial' = student created but some photos didn't
+            land — retry from the footer, never a silent false success. */}
+        {result?.status === 'failed' && (
+          <div style={{ padding: "10px 12px", borderRadius: 10, fontFamily: "var(--font-ui)", fontSize: 12,
+                        background: "color-mix(in oklab, var(--neon-pink) 12%, transparent)",
+                        color: "var(--neon-pink)", border: "1px solid color-mix(in oklab, var(--neon-pink) 40%, transparent)" }}>
+            {result.errMsg}
+          </div>
+        )}
+        {result?.status === 'partial' && (
+          <div style={{ padding: "12px 14px", borderRadius: 12, display: "flex", flexDirection: "column", gap: 6,
+                        background: "color-mix(in oklab, var(--neon-amber) 10%, transparent)",
+                        border: "1px solid color-mix(in oklab, var(--neon-amber) 36%, transparent)" }}>
+            <span style={{ fontFamily: "var(--font-ui)", fontSize: 13, fontWeight: 600, color: "var(--neon-amber)" }}>
+              Hồ sơ đã tạo, nhưng một số ảnh chưa tải lên được:
+            </span>
+            <span style={{ fontFamily: "var(--font-ui)", fontSize: 12, color: "var(--fg-2)" }}>
+              {result.failedKeys.map(docLabel).join(", ")}
+            </span>
+            <span style={{ fontFamily: "var(--font-ui)", fontSize: 11, color: "var(--fg-3)" }}>
+              Bấm "Tải lại ảnh còn thiếu" bên dưới. Ảnh vẫn được giữ cho đến khi tải xong.
+            </span>
+          </div>
+        )}
         {/* QR status — pinned at top. info/ok/warn/err tones map to
             cyan / lime / amber / pink. */}
         {qrToast && (() => {
@@ -335,7 +472,11 @@ function AddStudentModal({ open, onClose, onSave }) {
             {modalDocs.map(doc => (
               <DocSlot key={doc.key} doc={doc} filled={docs[doc.key]}
                        onDrop={handleDocDrop}
-                       onClear={(k) => setDocs({ ...docs, [k]: false })}
+                       onClear={(k) => {
+                         setDocs(prev => ({ ...prev, [k]: false }));
+                         setDocFiles(prev => { const { [k]: _, ...rest } = prev; return rest; });
+                         window.MGT_DRAFT_PHOTOS?.del('admin_new', k);
+                       }}
                        compact/>
             ))}
           </div>

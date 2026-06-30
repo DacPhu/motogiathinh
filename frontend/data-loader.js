@@ -98,8 +98,21 @@
         return 'Bạn không có quyền thao tác trên hồ sơ này. Liên hệ quản trị viên nếu cần.';
       if (s === 404)
         return 'Không tìm thấy hồ sơ. Hồ sơ có thể đã bị xóa — liên hệ quản trị viên.';
-      if (s === 409)
-        return 'Số CCCD này đã có trong hệ thống. Kiểm tra lại hoặc liên hệ quản trị viên.';
+      if (s === 409) {
+        // Map each backend 409 detail to its own actionable message — never
+        // collapse them to one vague line, or the user is left guessing what
+        // went wrong and what to do next.
+        if (/duplicate_cccd/i.test(detail))
+          return 'Số CCCD này đã có trong hệ thống. Kiểm tra lại hoặc liên hệ quản trị viên.';
+        if (/duplicate_email/i.test(detail))
+          return 'Email này đã được dùng cho một tài khoản khác. Nhập email khác, hoặc kiểm tra lại danh sách tài khoản.';
+        if (/branch_in_use/i.test(detail))
+          return 'Không thể xóa chi nhánh này vì vẫn còn lớp học hoặc học viên thuộc về nó. Chuyển hoặc xóa các mục đó trước, rồi thử lại.';
+        // create_conflict + any other unmapped 409: a transient save clash
+        // (e.g. a momentary mã hồ sơ collision), NOT a problem with the data
+        // entered. Safe to retry; the form keeps what was typed.
+        return 'Lưu chưa thành công do trùng dữ liệu tạm thời, không phải do thông tin bạn nhập. Đợi vài giây rồi bấm "Thử lại" — thông tin đã nhập vẫn được giữ. Nếu vẫn lỗi, liên hệ quản trị viên.';
+      }
       if (s >= 500)
         return 'Hệ thống đang gặp sự cố. Đợi vài giây rồi thử lại. Nếu lỗi kéo dài, liên hệ quản trị viên.';
     }

@@ -56,6 +56,7 @@ async def list_payments(current_user: CurrentUser, db: DB):
         acc = await accessible_class_ids(db, current_user)
         if not acc:
             return []
+        # CTV sees only payments for their own students
         enrolled_subq = (
             select(ClassEnrollment.student_id)
             .where(
@@ -63,7 +64,15 @@ async def list_payments(current_user: CurrentUser, db: DB):
                 ClassEnrollment.deleted_at.is_(None),
             )
         )
-        query = query.where(Payment.student_id.in_(enrolled_subq))
+        query = query.where(
+            Payment.student_id.in_(enrolled_subq),
+            Payment.student_id.in_(
+                select(Student.id).where(
+                    Student.responsible_staff_id == current_user.id,
+                    Student.deleted_at.is_(None),
+                )
+            ),
+        )
     elif current_user.role != RoleName.admin and current_user.branch_id:
         query = query.where(Payment.branch_id == current_user.branch_id)
     result = await db.execute(query)

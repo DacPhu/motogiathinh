@@ -5,6 +5,7 @@ Uses reportlab for PDFs and openpyxl for Excel.
 
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -17,6 +18,8 @@ from reportlab.lib import colors as rl_colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.units import cm
 from reportlab.lib.styles import ParagraphStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from sqlalchemy import select
 
@@ -36,6 +39,48 @@ _HEADER = rl_colors.HexColor("#0d3b52")
 _ALT    = rl_colors.HexColor("#f0f7fb")
 _WHITE  = rl_colors.white
 _GRAY   = rl_colors.HexColor("#888888")
+
+
+# ─── Vietnamese-capable PDF font ──────────────────────────────────────────────
+# reportlab's built-in Helvetica is Latin-1 only — Vietnamese diacritics (ố, ữ,
+# ạ…) render as boxes/blanks. We register DejaVu Sans (free, conventional sans-
+# serif, full Vietnamese coverage incl. the đồng sign), BUNDLED in the repo at
+# app/assets/fonts/ so it's always present at a fixed path — no dependence on an
+# apt package landing fonts where we expect. System paths are extra fallbacks for
+# local dev. If NOTHING usable is found we raise: a broken-glyph PDF is worse than
+# a clear error, and the bundled font means that branch should be unreachable.
+_FONT_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "fonts")
+
+
+def _register_vn_font() -> tuple[str, str]:
+    candidates = [
+        # (regular, bold) — first existing pair wins. Bundled font is first:
+        # resolved relative to this module, so it's guaranteed to exist.
+        (os.path.join(_FONT_DIR, "DejaVuSans.ttf"),
+         os.path.join(_FONT_DIR, "DejaVuSans-Bold.ttf")),
+        # System fonts (local dev fallbacks)
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+        ("/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+         "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf"),
+        ("C:/Windows/Fonts/arial.ttf", "C:/Windows/Fonts/arialbd.ttf"),
+        ("/Library/Fonts/Arial.ttf", "/Library/Fonts/Arial Bold.ttf"),
+    ]
+    for reg, bold in candidates:
+        if os.path.exists(reg) and os.path.exists(bold):
+            try:
+                pdfmetrics.registerFont(TTFont("VN", reg))
+                pdfmetrics.registerFont(TTFont("VN-Bold", bold))
+                return "VN", "VN-Bold"
+            except Exception:
+                continue
+    raise RuntimeError(
+        f"No Vietnamese-capable PDF font found. Expected bundled fonts at {_FONT_DIR} "
+        "(DejaVuSans.ttf + DejaVuSans-Bold.ttf)."
+    )
+
+
+_FONT, _FONT_BOLD = _register_vn_font()
 
 
 def _vn_date(dt) -> str:
@@ -71,10 +116,10 @@ def _tbl_style(header_rows: int = 1) -> list:
     return [
         ("BACKGROUND",    (0, 0), (-1, header_rows - 1), _HEADER),
         ("TEXTCOLOR",     (0, 0), (-1, header_rows - 1), _WHITE),
-        ("FONTNAME",      (0, 0), (-1, header_rows - 1), "Helvetica-Bold"),
+        ("FONTNAME",      (0, 0), (-1, header_rows - 1), _FONT_BOLD),
         ("FONTSIZE",      (0, 0), (-1, header_rows - 1), 8),
         ("ROWBACKGROUNDS",(0, header_rows), (-1, -1), [_WHITE, _ALT]),
-        ("FONTNAME",      (0, header_rows), (-1, -1), "Helvetica"),
+        ("FONTNAME",      (0, header_rows), (-1, -1), _FONT),
         ("FONTSIZE",      (0, header_rows), (-1, -1), 7.5),
         ("GRID",          (0, 0), (-1, -1), 0.25, rl_colors.HexColor("#cccccc")),
         ("TOPPADDING",    (0, 0), (-1, -1), 3),
@@ -122,8 +167,8 @@ async def dashboard_pdf(current_user: CurrentUser, db: DB):
     doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.5*cm, rightMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
     T  = ParagraphStyle
     story = [
-        Paragraph("TỔNG QUAN HỆ THỐNG", T("tit", fontSize=16, spaceAfter=4, textColor=_HEADER, fontName="Helvetica-Bold")),
-        Paragraph(f"Moto Gia Thịnh · {_vn_date(now)}", T("sub", fontSize=9, textColor=_GRAY, spaceAfter=12)),
+        Paragraph("TỔNG QUAN HỆ THỐNG", T("tit", fontSize=16, spaceAfter=4, textColor=_HEADER, fontName=_FONT_BOLD)),
+        Paragraph(f"Moto Gia Thịnh · {_vn_date(now)}", T("sub", fontSize=9, textColor=_GRAY, spaceAfter=12, fontName=_FONT)),
     ]
 
     kpi = [["CHỈ SỐ", "GIÁ TRỊ"],
@@ -134,7 +179,7 @@ async def dashboard_pdf(current_user: CurrentUser, db: DB):
     t = Table(kpi, colWidths=[9*cm, 6*cm])
     t.setStyle(TableStyle(_tbl_style()))
     story += [t, Spacer(1, 0.5*cm),
-              Paragraph("Theo chi nhánh", T("h2", fontSize=11, spaceAfter=4, textColor=_HEADER, fontName="Helvetica-Bold"))]
+              Paragraph("Theo chi nhánh", T("h2", fontSize=11, spaceAfter=4, textColor=_HEADER, fontName=_FONT_BOLD))]
 
     brows = [["CHI NHÁNH", "HỌC VIÊN", "DOANH THU (đ)"]]
     brows += [[v["name"], str(v["students"]), _money(v["revenue"])] for v in by_branch.values()]
@@ -170,9 +215,9 @@ async def data_pdf(current_user: CurrentUser, db: DB):
     doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=1.5*cm, rightMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
     T = ParagraphStyle
     story = [
-        Paragraph("BÁO CÁO 7 NGÀY", T("tit", fontSize=14, spaceAfter=4, textColor=_HEADER, fontName="Helvetica-Bold")),
-        Paragraph(f"{_vn_date(since)} – {_vn_date(now)}", T("sub", fontSize=9, textColor=_GRAY, spaceAfter=8)),
-        Paragraph(f"Học viên đăng ký ({len(students_7)})", T("h2", fontSize=10, spaceAfter=4, textColor=_HEADER, fontName="Helvetica-Bold")),
+        Paragraph("BÁO CÁO 7 NGÀY", T("tit", fontSize=14, spaceAfter=4, textColor=_HEADER, fontName=_FONT_BOLD)),
+        Paragraph(f"{_vn_date(since)} – {_vn_date(now)}", T("sub", fontSize=9, textColor=_GRAY, spaceAfter=8, fontName=_FONT)),
+        Paragraph(f"Học viên đăng ký ({len(students_7)})", T("h2", fontSize=10, spaceAfter=4, textColor=_HEADER, fontName=_FONT_BOLD)),
     ]
 
     srows = [["MÃ HV", "HỌ TÊN", "SĐT", "BẰNG LÁI", "TRẠNG THÁI", "NGÀY ĐK"]]
@@ -187,7 +232,7 @@ async def data_pdf(current_user: CurrentUser, db: DB):
 
     total_p = sum(p.so_tien for p in payments_7 if p.so_tien > 0)
     story.append(Paragraph(f"Thanh toán ({len(payments_7)}) — Tổng: {_money(total_p)} đ",
-                           T("h2", fontSize=10, spaceAfter=4, textColor=_HEADER, fontName="Helvetica-Bold")))
+                           T("h2", fontSize=10, spaceAfter=4, textColor=_HEADER, fontName=_FONT_BOLD)))
     prows = [["MÃ GD", "MÃ HV", "SỐ TIỀN (đ)", "PHƯƠNG THỨC", "NGÀY THU"]]
     for p in payments_7:
         prows.append([p.ma_giao_dich,

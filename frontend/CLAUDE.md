@@ -224,10 +224,7 @@ contract.
 
 ## Where to read more
 
-- `../HANDOFF.md` — UI architecture + v3 patterns (theme system,
-  chart palette, expansion choreography, etc.)
-- `../BACKEND.md` — canonical schema for every entity, derived-field
-  formulas, suggested REST endpoints, invariants, auth model
-- `../SPEC.md` — locked product rules
+- `../docs/STATUS.md` — the single keeping doc: current checkpoint, pending work, and the dated change log
+- `../CLAUDE.md` — backend + architecture rules (wire shape, auth, roles, derived fields)
 - `./README.md` — quick orientation for human devs
 - `./data/README.md` — current dataset's intent + how to swap subsets

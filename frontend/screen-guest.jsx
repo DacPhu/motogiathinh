@@ -25,9 +25,19 @@ const GUEST_MAX_WIDTH = 420;
     @keyframes mgt-success-pill-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
     @keyframes mgt-slide-in-right { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
     @keyframes mgt-slide-in-left  { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: translateX(0); } }
+    @keyframes mgt-ring-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   `;
   document.head.appendChild(s);
 })();
+
+// Required docs for a complete CTV profile. bangLai (old-licence) pair is
+// optional, so it's NOT gated — only these block the green success screen.
+const CTV_REQUIRED_DOCS = ['cccd', 'cccdBack', 'cccdQR', 'the3x4'];
+// Vietnamese labels for the partial-success "ảnh còn thiếu" retry list.
+const DOC_LABELS = {
+  cccd: "CCCD mặt trước", cccdBack: "CCCD mặt sau", cccdQR: "Mã QR CCCD",
+  the3x4: "Ảnh chân dung", bangLaiFront: "Bằng lái cũ mặt trước", bangLaiBack: "Bằng lái cũ mặt sau",
+};
 
 const G_LABEL = { fontFamily: "var(--font-mono)", fontSize: 10, letterSpacing: "0.16em", textTransform: "uppercase", color: "var(--fg-3)" };
 const G_ERROR_BANNER = {
@@ -116,6 +126,16 @@ async function draftClearPhotos(prefix) {
   } catch {}
 }
 
+// Delete a single drafted photo (e.g. user cleared one slot before submit).
+async function draftDeletePhoto(prefix, key) {
+  try {
+    const db = await _openDraftDB();
+    const tx = db.transaction(_DB_STORE, 'readwrite');
+    tx.objectStore(_DB_STORE).delete(prefix + '_' + key);
+    await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = rej; });
+  } catch {}
+}
+
 function GuestApp() {
   const D = window.MGT_DATA;
   const me = D.currentUser;
@@ -178,45 +198,143 @@ function GuestApp() {
     else setViewingId(null);
   }, []);
 
-  // ---- Touch gestures: left-edge swipe (back) + long pull-down (refresh) ----
+  // ---- Touch gestures: iOS edge-swipe back + distance-based pull-to-refresh ----
+  const mainRef = React.useRef(null);
+  const swipeRef = React.useRef({ startX: 0, startY: 0, active: false, swiping: false });
+  const pullRef = React.useRef({ startY: 0, atTop: false, time: 0 });
+  const pullOffsetRef = React.useRef(0);
+  const swipeOffsetRef = React.useRef(0);
+  const rafRef = React.useRef(0);
   const [refreshing, setRefreshing] = React.useState(false);
-  const touchRef = React.useRef({ startX: 0, startY: 0, maxDy: 0, time: 0 });
+  const [pullProgress, setPullProgress] = React.useState(0);
+
+  // Reset swipe when navigating to a different detail
+  React.useEffect(() => {
+    swipeOffsetRef.current = 0;
+    const el = mainRef.current;
+    if (el) { el.style.transition = "none"; el.style.transform = ""; }
+  }, [viewingId]);
+
+  // Clean up pull offset when refresh completes
+  React.useEffect(() => {
+    if (refreshing) return;
+    if (pullOffsetRef.current > 0) {
+      const el = mainRef.current;
+      if (el) { el.style.transition = "transform 380ms cubic-bezier(0.22, 1, 0.36, 1)"; el.style.transform = ""; }
+      pullOffsetRef.current = 0;
+      setPullProgress(0);
+    }
+  }, [refreshing]);
+
+  React.useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+
+  const _animFrame = React.useCallback(() => {
+    const el = mainRef.current;
+    if (!el) { rafRef.current = 0; return; }
+    const swiping = swipeRef.current.swiping;
+    const pulling = pullRef.current.active || refreshing;
+    if (!swiping && !pulling) { rafRef.current = 0; return; }
+    if (swiping) el.style.transform = "translate3d(" + swipeOffsetRef.current + "px, 0, 0)";
+    else if (pulling) el.style.transform = "translate3d(0, " + pullOffsetRef.current + "px, 0)";
+    rafRef.current = requestAnimationFrame(_animFrame);
+  }, [refreshing]);
 
   const onMainTouchStart = React.useCallback((e) => {
     const t = e.touches[0];
-    touchRef.current = { startX: t.clientX, startY: t.clientY, maxDy: 0, time: Date.now() };
-  }, []);
+    const el = mainRef.current;
+    if (viewingId && t.clientX < 15) {
+      swipeRef.current = { startX: t.clientX, startY: t.clientY, active: true, swiping: false };
+      if (el) { el.style.transition = "none"; }
+    } else if (!viewingId && !refreshing) {
+      const st = el ? el.scrollTop : 0;
+      pullRef.current = { startY: t.clientY, atTop: st <= 0, time: Date.now() };
+      pullRef.current.active = false;
+    }
+  }, [viewingId, refreshing]);
 
   const onMainTouchMove = React.useCallback((e) => {
-    const t = e.touches[0];
-    touchRef.current.maxDy = Math.max(touchRef.current.maxDy, t.clientY - touchRef.current.startY);
-  }, []);
-
-  const onMainTouchEnd = React.useCallback((e) => {
     if (refreshing) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - touchRef.current.startX;
-    const maxDy = touchRef.current.maxDy;
-    const dt = Date.now() - touchRef.current.time;
-    const startX = touchRef.current.startX;
+    const t = e.touches[0];
+    const sw = swipeRef.current;
+    const pl = pullRef.current;
 
-    // Left-edge swipe → navigate back (detail → list only).
-    // Start must be within 20px of left border, swipe > 80px right,
-    // and mostly horizontal. NOT mapped to: close modal (wrong gesture),
-    // exit to login (too destructive), dismiss camera (own cancel UI).
-    if (viewingId && startX < 20 && dx > 80 && Math.abs(t.clientY - touchRef.current.startY) < dx) {
-      backToList();
+    if (sw.active) {
+      const dx = t.clientX - sw.startX;
+      const dy = t.clientY - sw.startY;
+      if (!sw.swiping && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 0.7) {
+        sw.swiping = true;
+      }
+      if (sw.swiping) {
+        if (dx > 0) {
+          const w = window.innerWidth;
+          swipeOffsetRef.current = dx < w ? dx * (1 - dx / (w * 2.5)) : dx * 0.6;
+        } else { swipeOffsetRef.current = dx * 0.3; }
+        if (!rafRef.current) rafRef.current = requestAnimationFrame(_animFrame);
+      }
       return;
     }
 
-    // Long pull-down on list → refresh connection.
-    // Requires > 80px pull AND > 500ms hold to prevent accidental triggers.
-    if (!viewingId && maxDy > 80 && dt > 500) {
-      setRefreshing(true);
-      gToast("Đang cập nhật...", "info");
-      setTimeout(() => window.location.reload(), 300);
+    if (pl.atTop) {
+      const dy = t.clientY - pl.startY;
+      if (dy > 0) {
+        if (!pl.active) pl.active = true;
+        const resistance = 0.55;
+        const raw = dy * resistance;
+        const rr = 1 - Math.min(raw / (window.innerHeight * 0.6), 0.45);
+        pullOffsetRef.current = raw * rr;
+        const progress = Math.min(Math.max(pullOffsetRef.current / (window.innerHeight * 0.5), 0), 1);
+        setPullProgress(progress);
+        if (!rafRef.current) rafRef.current = requestAnimationFrame(_animFrame);
+      }
     }
-  }, [refreshing, viewingId, backToList]);
+  }, [_animFrame]);
+
+  const onMainTouchEnd = React.useCallback(() => {
+    const sw = swipeRef.current;
+    if (sw.active && sw.swiping) {
+      const el = mainRef.current;
+      const threshold = window.innerWidth * 0.33;
+      if (swipeOffsetRef.current >= threshold) {
+        if (el) { el.style.transition = "transform 300ms cubic-bezier(0.32, 0.72, 0, 1)"; el.style.transform = "translate3d(100vw, 0, 0)"; }
+        swipeRef.current.active = false;
+        swipeRef.current.swiping = false;
+        setTimeout(() => { swipeOffsetRef.current = 0; backToList(); }, 280);
+      } else {
+        if (el) { el.style.transition = "transform 350ms cubic-bezier(0.22, 1, 0.36, 1)"; el.style.transform = ""; }
+        swipeOffsetRef.current = 0;
+        swipeRef.current.active = false;
+        swipeRef.current.swiping = false;
+      }
+      return;
+    }
+    swipeRef.current.active = false;
+    swipeRef.current.swiping = false;
+
+    const pl = pullRef.current;
+    if (pl.active) {
+      pl.active = false;
+      const pullDuration = Date.now() - pl.time;
+      const threshold = window.innerHeight * 0.5;
+      if (pullOffsetRef.current >= threshold && pullDuration >= 300) {
+        pullOffsetRef.current = threshold;
+        setPullProgress(1);
+        setRefreshing(true);
+        gToast("Đang cập nhật...", "info");
+        if (window.MGT_DATA?.api?.refreshAllData) {
+          window.MGT_DATA.api.refreshAllData().then(() => {
+            setRefreshing(false);
+            gToast("Đã cập nhật", "success");
+          }).catch(() => { setRefreshing(false); gToast("Có lỗi xảy ra", "error"); });
+        } else { setTimeout(() => { setRefreshing(false); window.location.reload(); }, 800); }
+      } else {
+        const el = mainRef.current;
+        if (el) { el.style.transition = "transform 380ms cubic-bezier(0.22, 1, 0.36, 1)"; el.style.transform = ""; }
+        pullOffsetRef.current = 0;
+        setPullProgress(0);
+        if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = 0; }
+      }
+    }
+  }, [backToList, refreshing]);
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column",
@@ -234,14 +352,50 @@ function GuestApp() {
       <div style={{
         width: "100%", maxWidth: GUEST_MAX_WIDTH,
         height: "100dvh", minHeight: "100vh", maxHeight: "100dvh", overflow: "hidden",
-        display: "flex", flexDirection: "column", background: "var(--glass-1)",
+        display: "flex", flexDirection: "column", background: "var(--ink-1)",
         borderLeft: "1px solid var(--glass-stroke)", borderRight: "1px solid var(--glass-stroke)",
+        position: "relative",
       }}>
+        {/* Back page — visible during edge swipe from detail */}
+        {viewing && (
+          <div style={{
+            position: "absolute", inset: 0, zIndex: 0,
+            display: "flex", flexDirection: "column", background: "var(--ink-1)",
+          }}>
+            <header style={{
+              paddingTop: "max(16px, env(safe-area-inset-top, 16px))", paddingBottom: 16, paddingLeft: 18, paddingRight: 18,
+              display: "flex", alignItems: "center", gap: 10, minHeight: 80,
+              background: "var(--glass-2)", borderBottom: "1px solid var(--ink-4)", flex: "0 0 auto",
+            }}>
+              <GuestUserChip me={me} count={myStudents.length}/>
+              <div style={{ flex: 1 }}/>
+              <GuestThemeToggle/>
+            </header>
+            <div style={{ flex: 1, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 14 }}>
+              <button onClick={() => setAddOpen(true)} style={{
+                padding: "22px 18px", borderRadius: 16, border: "none", cursor: "pointer",
+                background: "var(--neon-cyan)", color: "var(--ink-0)",
+                boxShadow: "0 0 28px var(--neon-cyan-haze), 0 0 0 1px var(--neon-cyan)",
+                display: "flex", alignItems: "center", gap: 14,
+                fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 600,
+              }}>
+                <div style={{ width: 44, height: 44, borderRadius: 12, background: "rgba(0,0,0,0.18)",
+                              display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <Icon name="user-plus" size={22} color="var(--ink-0)"/>
+                </div>
+                <span style={{ flex: 1, textAlign: "left" }}>Thêm học viên</span>
+              </button>
+              <GuestStudentList students={myStudents} onOpen={(id) => setViewingId(id)}/>
+            </div>
+          </div>
+        )}
+
+        {/* Front page — slides right on edge swipe */}
         <header style={{
           paddingTop: "max(16px, env(safe-area-inset-top, 16px))", paddingBottom: 16, paddingLeft: 18, paddingRight: 18,
           display: "flex", alignItems: "center", gap: 10, minHeight: 80,
           background: viewing ? "var(--glass-3)" : "var(--glass-2)",
-          borderBottom: "1px solid var(--ink-4)", position: "relative", flex: "0 0 auto",
+          borderBottom: "1px solid var(--ink-4)", position: "relative", flex: "0 0 auto", zIndex: 1,
         }}>
           {viewing ? (
             <button onClick={backToList} style={{
@@ -260,11 +414,56 @@ function GuestApp() {
           </>)}
         </header>
 
-        <main style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 18px",
-                       paddingBottom: "env(safe-area-inset-bottom, 34px)" }}
+        <main ref={mainRef} style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 18px",
+                       paddingBottom: "env(safe-area-inset-bottom, 34px)", position: "relative", zIndex: 1,
+                       background: viewing ? "var(--ink-1)" : "transparent" }}
               onTouchStart={onMainTouchStart}
               onTouchMove={onMainTouchMove}
               onTouchEnd={onMainTouchEnd}>
+          {/* Pull-to-refresh indicator — fixed inside the scroll area */}
+          {!viewing && (pullProgress > 0 || refreshing) && (
+            <div style={{
+              position: "absolute", top: 16, left: "50%", transform: "translateX(-50%)",
+              zIndex: 10, display: "flex", justifyContent: "center", pointerEvents: "none",
+            }}>
+              {refreshing ? (
+                <div style={{
+                  width: 36, height: 36, borderRadius: "50%",
+                  animation: "mgt-ring-spin 0.8s linear infinite",
+                }}>
+                  <svg width="36" height="36" viewBox="0 0 36 36">
+                    <defs>
+                      <filter id="mgt-rg-glow-s"><feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#16E0FF" floodOpacity="0.6"/></filter>
+                    </defs>
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(22,224,255,0.12)" strokeWidth="2.5"/>
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="#16E0FF" strokeWidth="2.5"
+                      strokeLinecap="round" filter="url(#mgt-rg-glow-s)"
+                      strokeDasharray="94.25" strokeDashoffset="23.56"
+                      transform="rotate(-90 18 18)"/>
+                  </svg>
+                </div>
+              ) : (
+                <div style={{
+                  transform: "scale(" + (1 + pullProgress * 0.15) + ")",
+                  opacity: Math.min(pullProgress * 2, 1),
+                  transition: "none",
+                  filter: pullProgress >= 1 ? "drop-shadow(0 0 10px #16E0FF) drop-shadow(0 0 20px #16E0FF)" : "drop-shadow(0 0 4px rgba(22,224,255,0.4))",
+                }}>
+                  <svg width="36" height="36" viewBox="0 0 36 36">
+                    <defs>
+                      <filter id="mgt-rg-glow"><feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#16E0FF" floodOpacity="0.6"/></filter>
+                    </defs>
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="rgba(22,224,255,0.12)" strokeWidth="2.5"/>
+                    <circle cx="18" cy="18" r="15" fill="none" stroke="#16E0FF" strokeWidth="2.5"
+                      strokeLinecap="round" filter="url(#mgt-rg-glow)"
+                      strokeDasharray="94.25" strokeDashoffset={94.25 * (1 - pullProgress)}
+                      transform="rotate(-90 18 18)"/>
+                  </svg>
+                </div>
+              )}
+            </div>
+          )}
+
           {viewing ? (
             <div key={viewingId} style={{ animation: "mgt-slide-in-right 260ms cubic-bezier(0.22, 1, 0.36, 1) both" }}>
               <GuestStudentDetail student={viewing} onBack={backToList}/>
@@ -548,7 +747,7 @@ function GuestStudentDetail({ student, onBack }) {
 
   const cls = D.getClass(student.classId);
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 16, background: "var(--ink-1)" }}>
       <div style={{ padding: "18px 16px", borderRadius: 16, background: "var(--glass-2)",
                     border: "1px solid var(--glass-stroke)", display: "flex", alignItems: "center", gap: 14 }}>
         <Avatar name={student.name} size={56} glow src={student.docs_the3x4_url || null}/>
@@ -1202,4 +1401,7 @@ function LicencePill({ value, onChange, invalid = false, options = [{ id: "A1", 
   );
 }
 
-Object.assign(window, { GuestApp });
+// Photo-draft helpers are reused by the admin AddStudentModal (modals.jsx)
+// so its photo persistence matches the CTV flow. They're user-scoped via
+// _getDbName(), so no cross-user leakage on shared devices.
+Object.assign(window, { GuestApp, MGT_DRAFT_PHOTOS: { save: draftSavePhoto, load: draftLoadPhoto, clear: draftClearPhotos, del: draftDeletePhoto } });

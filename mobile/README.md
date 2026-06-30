@@ -87,4 +87,4 @@ ad-hoc / TestFlight paths above for longer-lived, easier distribution to other t
 ## Notes / known follow-ups
 - `src/config.js` API base is a placeholder until the backend is deployed.
 - Login uses the web overlay (themed) for now; a native-styled login is a nice-to-have.
-- See `../docs/HANDOFF.md` for backend (Bearer) + deploy context.
+- See `../docs/STATUS.md` for the current checkpoint (what's live, what's pending).

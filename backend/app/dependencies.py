@@ -161,16 +161,14 @@ def permissions_for_role(role: RoleName) -> dict[str, dict[str, bool]]:
       - admin / staff → full CRUD on every resource (admin-only mutations are
         separately gated by the AdminUser dependency).
       - collaborator (CTV) → students create+read only.
-      - guest (kiosk)       → students create+read+update (update = doc upload);
-        per-row ownership is enforced in the route handlers.
+      - guest → zero permissions (reserved for future 4th-level role).
     """
     if role in (RoleName.admin, RoleName.staff):
         return _all(True)
     out = _all(False)
     if role == RoleName.collaborator:
         out["students"] = {"c": True, "r": True, "u": True, "d": False}
-    elif role == RoleName.guest:
-        out["students"] = {"c": True, "r": True, "u": True, "d": False}
+    # guest: all False — no permissions whatsoever
     return out
 
 

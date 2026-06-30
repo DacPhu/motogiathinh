@@ -3,12 +3,24 @@
 //             giáo viên / phương tiện / nhật ký
 // ====================================================================
 
-const PASSWORD_CHECKS = [
+const PASSWORD_CHECKS_CTV = [
   { label: "≥ 1 ký tự",  test: (v) => (v || "").length >= 1 },
 ];
-function pwOk(v) { return (v || "").length >= 1; }
+const PASSWORD_CHECKS_ADMIN_STAFF = [
+  { label: "≥ 6 ký tự",           test: (v) => (v || "").length >= 6 },
+  { label: "1 chữ cái in hoa",    test: (v) => /[A-Z]/.test(v || "") },
+  { label: "1 chữ cái in thường", test: (v) => /[a-z]/.test(v || "") },
+  { label: "1 chữ số",            test: (v) => /[0-9]/.test(v || "") },
+  { label: "1 ký tự đặc biệt",    test: (v) => /[^A-Za-z0-9]/.test(v || "") },
+];
+function pwChecksForRole(role) {
+  return (role === "collaborator") ? PASSWORD_CHECKS_CTV : PASSWORD_CHECKS_ADMIN_STAFF;
+}
+function pwOk(v, role) {
+  return pwChecksForRole(role).every(c => c.test(v));
+}
 
-function PasswordChecks({ value, checks = PASSWORD_CHECKS }) {
+function PasswordChecks({ value, checks = PASSWORD_CHECKS_ADMIN_STAFF }) {
   return (
     <div style={{
       display: "flex", flexDirection: "column",
@@ -84,6 +96,8 @@ function BranchesTab({ onOpenClass }) {
     { id: "address",    label: "Địa chỉ",       type: "text",   placeholder: "123 Lê Lợi, Q.1, TP.HCM", fullWidth: true },
     { id: "manager_id", label: "Quản lý",       type: "select", options: managerOpts, fullWidth: true },
   ];
+  // address is locked on edit — immutable identifier
+  const branchEditFields = branchFields.map(f => f.id === "address" ? { ...f, disabled: true } : f);
   const editing = editingId ? D.getBranch(editingId) : null;
 
   return (
@@ -104,7 +118,7 @@ function BranchesTab({ onOpenClass }) {
         title="Sửa chi nhánh"
         subtitle={editing?.name}
         initialValues={editing || {}}
-        fields={branchFields}
+        fields={branchEditFields}
         onSave={(d) => window.MGT_DATA.api.updateBranch(editingId, d)}/>
       {/* Right-click context menu for branch cards (admin only) */}
       {ctxMenu && canUpdate && (
@@ -328,7 +342,6 @@ function AccountsTab() {
   const [open, setOpen] = React.useState(false);
   const [editingId, setEditingId] = React.useState(null);
   const [pwId, setPwId] = React.useState(null);
-  const [confirmDeleteId, setConfirmDeleteId] = React.useState(null);
   const canCreate = D.can("accounts", "create");
   const canUpdate = D.can("accounts", "update");
   // "Bảng vàng CTV" launcher — admin/staff only. Collaborators never reach
@@ -359,14 +372,15 @@ function AccountsTab() {
     { id: "email",    label: "Tên đăng nhập (Email)",   type: "text",   placeholder: "you@motogiathinh.vn" },
     { id: "phone",    label: "Số điện thoại",           type: "phone",  placeholder: "090 123 4567" },
     { id: "password", label: "Mật khẩu tạm thời",       type: "password", placeholder: "Mật khẩu mới",
-      fullWidth: true, checks: PASSWORD_CHECKS },
+      fullWidth: true },
   ];
   // PATCH doesn't accept `password` — keep the edit form without it
-  // (use Đặt lại mật khẩu instead).
-  const accountEditFields = accountCreateFields.filter(f => f.id !== "password");
+  // (use Đặt lại mật khẩu instead). name and email are locked (immutable identifiers).
+  const accountEditFields = accountCreateFields
+    .filter(f => f.id !== "password")
+    .map(f => (f.id === "name" || f.id === "email") ? { ...f, disabled: true } : f);
   const editing = editingId ? D.accounts.find(x => x.id === editingId) : null;
   const pwAccount = pwId ? D.accounts.find(x => x.id === pwId) : null;
-  const confirmDeleteAccount = confirmDeleteId ? D.accounts.find(x => x.id === confirmDeleteId) : null;
   return (
     <GlassCard padding={0}>
       <div style={{ padding: "14px 22px", borderBottom: "1px solid var(--ink-4)", display: "flex", alignItems: "center", gap: 10 }}>
@@ -386,15 +400,6 @@ function AccountsTab() {
       <PasswordResetModal open={!!pwAccount} onClose={() => setPwId(null)}
         account={pwAccount}
         onSubmit={(pw) => window.MGT_DATA.api.resetPassword(pwId, pw)}/>
-      <ConfirmDialog open={!!confirmDeleteAccount} onClose={() => setConfirmDeleteId(null)}
-        title="Xoá tài khoản"
-        message={`Xoá nhân viên ${confirmDeleteAccount?.name || ""}? Tài khoản sẽ không thể đăng nhập và biến mất khỏi danh sách. Hành động có thể được hoàn tác bởi admin nếu cần.`}
-        primaryLabel="Xác nhận xoá"
-        onConfirm={async () => {
-          try { await window.MGT_DATA.api.deleteAccount(confirmDeleteId); }
-          catch (e) { reportWriteError(e, "Không thể xoá tài khoản"); }
-          setConfirmDeleteId(null);
-        }}/>
       <div style={{
         display: "grid", gridTemplateColumns: "1.6fr 110px 1.4fr 1fr 140px 100px 40px",
         padding: "12px 22px", gap: 12, borderBottom: "1px solid var(--ink-4)",
@@ -402,7 +407,16 @@ function AccountsTab() {
       }}>
         <span>Tài khoản</span><span>Vai trò</span><span>Email</span><span>Chi nhánh</span><span>Hoạt động cuối</span><span>Trạng thái</span><span></span>
       </div>
-      {D.accounts.map((a, i) => {
+      {[...D.accounts].filter(a => a.role !== "guest").sort((a, b) => {
+        // Primary: role priority (admin > staff > collaborator)
+        const roleOrder = { admin: 0, staff: 1, collaborator: 2, guest: 3 };
+        const ra = roleOrder[a.role] ?? 9;
+        const rb = roleOrder[b.role] ?? 9;
+        if (ra !== rb) return ra - rb;
+        // Secondary: most recently active first
+        const parseLast = (s) => { if (!s) return 0; const [d,m,yrest] = s.split("/"); const [y,t] = yrest.split(" "); return new Date(y, m-1, d, ...(t||"0:0").split(":").map(Number)).getTime(); };
+        return parseLast(b.lastActive) - parseLast(a.lastActive);
+      }).map((a, i) => {
         const b = D.getBranch(a.branchId);
         return (
           <div key={a.id} style={{
@@ -434,8 +448,6 @@ function AccountsTab() {
                 onClick: () => window.MGT_DATA.api.updateAccount(a.id, { active: !a.active }).catch(e => reportWriteError(e, "Lỗi cập nhật")),
                 hidden: !canUpdate },
               { label: "Đặt lại mật khẩu", onClick: () => setPwId(a.id), hidden: !canUpdate },
-              { label: "Xóa", onClick: () => setConfirmDeleteId(a.id),
-                hidden: !canUpdate || a.id === D.currentUserId, danger: true },
             ]}/>
           </div>
         );
@@ -1039,6 +1051,7 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
               ? <Select label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)}
                         placeholder={f.placeholder || "Chọn…"}
+                        disabled={f.disabled}
                         options={(f.options || []).map(o => ({ value: o.id, label: o.label }))}/>
               : f.type === "multipill"
               ? <MultiPillFieldInline label={f.label} values={draft[f.id]}
@@ -1053,6 +1066,7 @@ function EditRecordModal({ open, onClose, title, subtitle, fields, initialValues
                            color={f.color || "cyan"}/>
               : <Input  label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)} placeholder={f.placeholder}
+                        disabled={f.disabled}
                         type={f.type === "password" ? "password" : "text"}
                         digits={["phone","cccd","money","int","date"].includes(f.type)}
                         maxDigits={f.type === "phone" ? 10 : f.type === "cccd" ? 12 : f.type === "date" ? 8 : f.type === "money" ? 12 : undefined}
@@ -1086,8 +1100,9 @@ function PasswordResetModal({ open, onClose, account, onSubmit }) {
   const [pw, setPw]     = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [err, setErr]   = React.useState(null);
-  // Synchronous double-submit guard — see RecordCreatorModal for rationale.
   const busyRef = React.useRef(false);
+  const role = account?.role || "staff";
+  const checks = pwChecksForRole(role);
   React.useEffect(() => { if (open) { setPw(""); setBusy(false); setErr(null); busyRef.current = false; } }, [open]);
   const submit = async () => {
     if (busyRef.current) return;
@@ -1110,7 +1125,7 @@ function PasswordResetModal({ open, onClose, account, onSubmit }) {
            primaryAction={submit}
            primaryLabel={busy ? "Đang đặt lại…" : "Đặt lại"}
            primaryIcon="check" width={420}
-           primaryDisabled={busy || !pwOk(pw)}
+           primaryDisabled={busy || !pwOk(pw, role)}
            footerStart={err ? (
              <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--neon-pink)" }}>
                {err}
@@ -1119,7 +1134,7 @@ function PasswordResetModal({ open, onClose, account, onSubmit }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <Input label="Mật khẩu mới" value={pw} onChange={setPw}
                type="password" placeholder="Mật khẩu mới"/>
-        <PasswordChecks value={pw}/>
+        <PasswordChecks value={pw} checks={checks}/>
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--fg-3)", letterSpacing: "0.12em", textTransform: "uppercase" }}>
           Người dùng sẽ phải đăng nhập lại bằng mật khẩu này.
         </span>
@@ -1340,6 +1355,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
               ? <Select label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)}
                         placeholder={f.placeholder || "Chọn…"}
+                        disabled={f.disabled}
                         options={(f.options || []).map(o => ({ value: o.id, label: o.label }))}/>
               : f.type === "multipill"
               ? <MultiPillFieldInline label={f.label} values={draft[f.id]}
@@ -1354,6 +1370,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
                            color={f.color || "cyan"}/>
               : <Input  label={f.label} value={draft[f.id]}
                         onChange={(v) => set(f.id, v)} placeholder={f.placeholder}
+                        disabled={f.disabled}
                         type={f.type === "password" ? "password" : "text"}
                         digits={["phone","cccd","money","int","date"].includes(f.type)}
                         maxDigits={f.type === "phone" ? 10 : f.type === "cccd" ? 12 : f.type === "date" ? 8 : f.type === "money" ? 12 : undefined}
@@ -1367,7 +1384,7 @@ function RecordCreatorModal({ open, onClose, title, subtitle, fields, onCreate }
             return (
               <div key={f.id} style={{ gridColumn: useGrid && span === 2 ? "span 2" : "auto" }}>
                 {node}
-                {f.checks && <PasswordChecks value={draft[f.id]} checks={f.checks}/>}
+                {f.type === "password" && <PasswordChecks value={draft[f.id]} checks={f.id === "password" ? pwChecksForRole(draft.role) : f.checks}/>}
               </div>
             );
           })}

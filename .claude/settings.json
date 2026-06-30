@@ -1,10 +1,19 @@
 {
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.tuongtacfree.vn/",
+    "ANTHROPIC_AUTH_TOKEN": "sk-e7b2aeb657655b53e0d666a0561926cb52e448f84b22fe5ceb9845d5e0a9dd44",
+    "ANTHROPIC_API_KEY": "sk-e7b2aeb657655b53e0d666a0561926cb52e448f84b22fe5ceb9845d5e0a9dd44",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "API_TIMEOUT_MS": "600000",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4.5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4.8",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4.5"
+  },
   "permissions": {
-    "allow": [
-      "Read",
-      "Glob",
-      "Grep",
-      "LSP"
-    ]
-  }
+    "defaultMode": "plan",
+    "allow": [],
+    "deny": []
+  },
+  "hasCompletedOnboarding": true,
+  "model": "opus"
 }

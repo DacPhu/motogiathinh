@@ -56,7 +56,7 @@ class BranchCreate(BaseModel):
 
 class BranchUpdate(BaseModel):
     name: Optional[str] = None
-    address: Optional[str] = None
+    # address is locked — immutable identifier
     manager_id: Optional[str] = None
 
 
@@ -115,7 +115,7 @@ async def update_branch(
     if not b: raise HTTPException(404, "branch_not_found")
     fields = data.model_dump(exclude_unset=True)
     if "name" in fields:    b.ten_chi_nhanh = fields["name"]
-    if "address" in fields: b.dia_chi = fields["address"]
+    # address is immutable — locked for identification
     if "manager_id" in fields:
         try: b.manager_id = uuid.UUID(fields["manager_id"]) if fields["manager_id"] else None
         except ValueError: b.manager_id = None

@@ -43,9 +43,19 @@ step() { echo -e "\n${B}━━ $* ━━━━━━━━━━━━━━━�
 
 # ── SSH helpers ───────────────────────────────────────────────────────────────
 SSH_CONTROL="/tmp/ssh-ctl-$$"
-SSH_BASE="-p ${VPS_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o ControlMaster=auto -o ControlPath=${SSH_CONTROL} -o ControlPersist=120"
+# ControlMaster multiplexing is intentionally OFF — it fails on Git Bash / MSYS
+# (mux_client_request_session: Connection reset). With key auth there are no
+# repeated password prompts, so per-command connections cost nothing meaningful.
+SSH_BASE="-p ${VPS_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=10"
 
-if [[ -n "${VPS_PASS:-}" ]]; then
+# Prefer the dedicated SSH key when present — sshpass mangles passwords on some
+# platforms (Git Bash / MSYS pty), so key auth is the reliable path. Fall back
+# to sshpass password auth only when no key exists.
+_SSH_KEY="${VPS_SSH_KEY:-$HOME/.ssh/id_ed25519_motogiathinh}"
+if [[ -f "$_SSH_KEY" ]]; then
+  SSH_BASE="${SSH_BASE} -o IdentitiesOnly=yes -i ${_SSH_KEY}"
+  SSH_CMD="ssh"
+elif [[ -n "${VPS_PASS:-}" ]]; then
   command -v sshpass >/dev/null || die "sshpass not found — brew install hudochenkov/sshpass/sshpass"
   export SSHPASS="${VPS_PASS}"
   SSH_CMD="sshpass -e ssh"
@@ -53,7 +63,7 @@ else
   SSH_CMD="ssh"
 fi
 
-trap '${SSH_CMD} ${SSH_BASE} -O exit ${SSH_TARGET} 2>/dev/null || true; rm -f "${SSH_CONTROL}"' EXIT
+trap 'rm -f "${SSH_CONTROL}"' EXIT
 
 remote() {
   ${SSH_CMD} ${SSH_BASE} "${SSH_TARGET}" "$@"
@@ -63,15 +73,36 @@ remote_script() {
   ${SSH_CMD} ${SSH_BASE} "${SSH_TARGET}" bash -s
 }
 
-# rsync always uses SSH_CMD as the transport (one sshpass layer only)
+# File transfer via scp (rsync not available on all dev machines). Takes
+# a local path and a user@host:remote target, same as the rsync calls below.
+# SCP_CMD wraps sshpass the same way SSH_CMD does.
+if [[ -f "$_SSH_KEY" ]]; then
+  SCP_CMD="scp"
+elif [[ -n "${VPS_PASS:-}" ]]; then
+  SCP_CMD="sshpass -e scp"
+else
+  SCP_CMD="scp"
+fi
+# scp uses -P for port (lowercase -p means "preserve times"), so SSH_BASE
+# (which has -p) can't be reused verbatim — translate it.
+SCP_BASE="-P ${VPS_PORT} -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+[[ -f "$_SSH_KEY" ]] && SCP_BASE="${SCP_BASE} -o IdentitiesOnly=yes -i ${_SSH_KEY}"
 sync_to_server() {
-  rsync -e "${SSH_CMD} ${SSH_BASE}" "$@"
+  # Drop rsync-style flags (-az / -a / -z); scp takes a recursive -r instead.
+  local args=()
+  for a in "$@"; do
+    case "$a" in
+      -az|-a|-z) ;;                  # rsync archive/compress flags — no scp equivalent needed
+      *) args+=("$a") ;;
+    esac
+  done
+  ${SCP_CMD} ${SCP_BASE} "${args[@]}"
 }
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 step "Preflight"
 [[ -z "${VPS_HOST:-}" ]] && die "VPS_HOST not set — add it to .deploy.env"
-command -v rsync  >/dev/null || die "rsync not found"
+command -v scp    >/dev/null || die "scp not found"
 command -v zip    >/dev/null || die "zip not found"
 remote "exit 0" || die "Cannot reach ${SSH_TARGET}"
 info "Target: ${SSH_TARGET}:${REMOTE_DIR}"

@@ -667,7 +667,7 @@ function ClassStatusPill({ status, onClick, glow }) {
 // --------------------------------------------------------------------
 // Select dropdown — used for Học phí, Khuyến mãi, Class, etc.
 // --------------------------------------------------------------------
-function Select({ label, value, onChange, options, placeholder = "Chọn…", note, success = false, invalid = false }) {
+function Select({ label, value, onChange, options, placeholder = "Chọn…", note, success = false, invalid = false, disabled = false }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {label && <label style={{
@@ -675,13 +675,13 @@ function Select({ label, value, onChange, options, placeholder = "Chọn…", no
         textTransform: "uppercase", color: "var(--fg-3)",
       }}>{label}</label>}
       <div style={{ position: "relative" }}>
-        <select value={value || ""} onChange={e => onChange && onChange(e.target.value)} style={{
+        <select value={value || ""} onChange={e => onChange && onChange(e.target.value)} disabled={disabled} style={{
           width: "100%", appearance: "none",
-          background: success ? "color-mix(in oklab, var(--neon-lime) 10%, transparent)"
+          background: disabled ? "var(--ink-3)" : success ? "color-mix(in oklab, var(--neon-lime) 10%, transparent)"
                     : invalid ? "color-mix(in oklab, var(--neon-pink) 10%, transparent)" : "var(--ink-2)",
           border: `1px solid ${success ? "var(--neon-lime)" : invalid ? "var(--neon-pink)" : "var(--glass-stroke)"}`,
           borderRadius: 10, padding: "10px 36px 10px 12px",
-          color: value ? "var(--fg-1)" : "var(--fg-4)",
+          color: disabled ? "var(--fg-4)" : value ? "var(--fg-1)" : "var(--fg-4)",
           fontFamily: "var(--font-ui)", fontSize: 14, cursor: "pointer", outline: "none",
         }}>
           {/* Disabled "Chọn…" only when nothing is selected — once the

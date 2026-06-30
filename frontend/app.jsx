@@ -100,6 +100,82 @@ function AppRoot() {
   const openPayment = (id) => setDetail({ type: "payment", id });
   const openClass   = (id) => { setTab("classes"); setDetail({ type: "class", id }); };
 
+  // ---- Edge-swipe back gesture (mobile) ----
+  const mainRef = React.useRef(null);
+  const overlayRef = React.useRef(null);
+  const swipeRef = React.useRef({ startX: 0, startY: 0, active: false, swiping: false });
+  const swipeOffsetRef = React.useRef(0);
+  const rafRef = React.useRef(0);
+
+  React.useEffect(() => {
+    swipeOffsetRef.current = 0;
+    const el = mainRef.current;
+    if (el) { el.style.transition = "none"; el.style.transform = ""; }
+    if (overlayRef.current) overlayRef.current.style.opacity = "0";
+  }, [detail]);
+
+  React.useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+
+  const _swipeRaf = React.useCallback(() => {
+    const el = mainRef.current;
+    if (!el || !swipeRef.current.swiping) { rafRef.current = 0; return; }
+    el.style.transform = "translate3d(" + swipeOffsetRef.current + "px, 0, 0)";
+    if (overlayRef.current) overlayRef.current.style.opacity = String(Math.min(swipeOffsetRef.current / 250, 0.35));
+    rafRef.current = requestAnimationFrame(_swipeRaf);
+  }, []);
+
+  const onMainTouchStart = React.useCallback((e) => {
+    if (!detail) return;
+    const t = e.touches[0];
+    if (t.clientX < 15) {
+      swipeRef.current = { startX: t.clientX, startY: t.clientY, active: true, swiping: false };
+      const el = mainRef.current;
+      if (el) el.style.transition = "none";
+    }
+  }, [detail]);
+
+  const onMainTouchMove = React.useCallback((e) => {
+    if (!swipeRef.current.active) return;
+    const t = e.touches[0];
+    const sw = swipeRef.current;
+    const dx = t.clientX - sw.startX;
+    const dy = t.clientY - sw.startY;
+    if (!sw.swiping && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 0.7) {
+      sw.swiping = true;
+    }
+    if (sw.swiping) {
+      if (dx > 0) {
+        const w = window.innerWidth;
+        swipeOffsetRef.current = dx < w ? dx * (1 - dx / (w * 2.5)) : dx * 0.6;
+      } else { swipeOffsetRef.current = dx * 0.3; }
+      if (!rafRef.current) rafRef.current = requestAnimationFrame(_swipeRaf);
+    }
+  }, [_swipeRaf]);
+
+  const onMainTouchEnd = React.useCallback(() => {
+    const sw = swipeRef.current;
+    if (sw.active && sw.swiping) {
+      const el = mainRef.current;
+      const threshold = window.innerWidth * 0.33;
+      if (swipeOffsetRef.current >= threshold) {
+        if (el) { el.style.transition = "transform 300ms cubic-bezier(0.32, 0.72, 0, 1)"; el.style.transform = "translate3d(100vw, 0, 0)"; }
+        if (overlayRef.current) { overlayRef.current.style.transition = "opacity 250ms"; overlayRef.current.style.opacity = "0"; }
+        sw.active = false; sw.swiping = false;
+        setTimeout(() => {
+          swipeOffsetRef.current = 0;
+          setDetail(detail?.from || null);
+        }, 280);
+      } else {
+        if (el) { el.style.transition = "transform 350ms cubic-bezier(0.22, 1, 0.36, 1)"; el.style.transform = ""; }
+        if (overlayRef.current) { overlayRef.current.style.transition = "opacity 300ms"; overlayRef.current.style.opacity = "0"; }
+        swipeOffsetRef.current = 0;
+        sw.active = false; sw.swiping = false;
+      }
+      return;
+    }
+    sw.active = false; sw.swiping = false;
+  }, [detail]);
+
   const TITLES = {
     dashboard:    { title: "Tổng quan"            },
     students:     { title: "Danh sách học viên"   },
@@ -129,7 +205,16 @@ function AppRoot() {
                unreadCount={unread}
                collapsed={navCollapsed}/>}
 
-      <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      {/* Dimming overlay during edge swipe */}
+      <div ref={overlayRef} style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+        zIndex: 999, opacity: 0, pointerEvents: "none",
+      }}/>
+      <main ref={mainRef} style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column",
+             position: "relative", overflow: "hidden", zIndex: 1 }}
+            onTouchStart={onMainTouchStart}
+            onTouchMove={onMainTouchMove}
+            onTouchEnd={onMainTouchEnd}>
         {/* Detail back link sits ABOVE the title row */}
         {detail && (
           <button onClick={() => detail.from ? setDetail(detail.from) : setDetail(null)} style={{
@@ -200,31 +285,9 @@ function AppRoot() {
         </div>
       </main>
 
-      <AddStudentModal open={addStudent} onClose={() => setAddStudent(false)}
-                       onSave={async (payload) => {
-                         try {
-                           const { docFiles, ...rest } = payload;
-                           const created = await D.api.createStudent(rest);
-                           // Then upload any captured files. Independent so a
-                           // failed upload doesn't block the rest — but surface
-                           // each failure via toast (was console.warn-only,
-                           // invisible to the user).
-                           // Sequential, not Promise.all — concurrent uploads raced
-                           // the access check + per-row update → intermittent 403s.
-                           for (const [key, file] of Object.entries(docFiles || {})) {
-                             if (!file) continue;
-                             try { await D.api.uploadStudentDoc(created.id, key, file); }
-                             catch (e) {
-                               console.warn('upload failed', key, e);
-                               if (window.MGT_TOAST) window.MGT_TOAST(`Lỗi tải tài liệu ${key}: ${e.message}`);
-                             }
-                           }
-                         } catch (e) {
-                           // Surface the create failure as a toast (was alert).
-                           if (window.MGT_TOAST) window.MGT_TOAST("Không thể tạo học viên. Kiểm tra lại thông tin rồi thử lại.");
-                           else alert("Không thể tạo học viên. Kiểm tra lại thông tin rồi thử lại.");
-                         }
-                       }}/>
+      {/* AddStudentModal owns its own create+upload lifecycle (it must gate
+          close on full upload success — see modals.jsx submit()). No onSave. */}
+      <AddStudentModal open={addStudent} onClose={() => setAddStudent(false)}/>
       <AddPaymentModal open={addPayment.open} defaultStudentId={addPayment.studentId}
                        defaultAmount={addPayment.amount}
                        onClose={() => setAddPayment({ open: false, studentId: null, amount: null })}

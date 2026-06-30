@@ -123,6 +123,10 @@ async def _student_accessible(db, current_user, student_id: uuid.UUID, active_on
     if current_user.role == RoleName.admin:
         return True
     if current_user.role == RoleName.collaborator:
+        # CTV can only access their own profiles in active assigned classes
+        s = await db.get(Student, student_id)
+        if not s or s.responsible_staff_id != current_user.id:
+            return False
         acc = await (accessible_class_ids(db, current_user) if active_only
                      else assigned_class_ids(db, current_user))
         if not acc:
@@ -161,6 +165,7 @@ async def list_students(current_user: CurrentUser, db: DB):
         acc = await accessible_class_ids(db, current_user)
         if not acc:
             return []
+        # CTV sees only their own profiles in active assigned classes
         enrolled_subq = (
             select(ClassEnrollment.student_id)
             .where(
@@ -168,7 +173,10 @@ async def list_students(current_user: CurrentUser, db: DB):
                 ClassEnrollment.deleted_at.is_(None),
             )
         )
-        query = query.where(Student.id.in_(enrolled_subq))
+        query = query.where(
+            Student.id.in_(enrolled_subq),
+            Student.responsible_staff_id == current_user.id,
+        )
     elif current_user.role != RoleName.admin and current_user.branch_id:
         query = query.where(Student.branch_id == current_user.branch_id)
     result = await db.execute(query)
@@ -287,7 +295,7 @@ async def create_student(
         try: resp_uuid = uuid.UUID(f.responsibleStaffId)
         except ValueError: resp_uuid = None
 
-    ma_hv = await next_student_id()
+    ma_hv = await next_student_id(db)
 
     # Address conversion: best-effort, never blocks profile creation.
     # The old address (from QR or form) is always saved in dia_chi_cccd.
@@ -343,7 +351,16 @@ async def create_student(
         await db.commit()
     except IntegrityError:
         await db.rollback()
-        raise HTTPException(409, "duplicate_cccd")
+        # Only blame the CCCD if one genuinely exists — otherwise this was a
+        # different unique violation (e.g. an ma_hoc_vien collision) and saying
+        # "duplicate CCCD" sends the user hunting for a record that isn't there.
+        if f.idNumber:
+            dup = await db.execute(
+                select(Student).where(Student.cccd_number == f.idNumber, Student.deleted_at.is_(None)).limit(1)
+            )
+            if dup.scalar_one_or_none() is not None:
+                raise HTTPException(409, "duplicate_cccd")
+        raise HTTPException(409, "create_conflict")
     await db.refresh(s)
     slug_map = await _slug_map(db)
     out = _to_wire(s, slug_map)

@@ -134,11 +134,10 @@ class AccountCreate(BaseModel):
 
 
 class AccountUpdate(BaseModel):
-    name: Optional[str] = None
+    # name and email are locked — immutable identifiers for usage tracking
     role: Optional[str] = None
     branchId: Optional[str] = None
     phone: Optional[str] = None
-    email: Optional[EmailStr] = None
     active: Optional[bool] = None
     branchIds: Optional[list[str]] = None  # branch SLUGS (CTV many-to-many)
     classIds: Optional[list[str]] = None   # class UUID strings (CTV many-to-many)
@@ -201,9 +200,8 @@ async def update_account(user_id: str, data: AccountUpdate, current_user: AdminU
     u = await db.get(User, u_uuid)
     if not u: raise HTTPException(404, "account_not_found")
     fields = data.model_dump(exclude_unset=True)
-    if "name" in fields:  u.full_name = fields["name"]
+    # name and email are immutable — locked for usage tracking
     if "phone" in fields: u.phone = fields["phone"]
-    if "email" in fields: u.email = fields["email"]
     if "role" in fields and fields["role"] in ("admin", "staff", "collaborator", "guest"):
         u.role = RoleName(fields["role"])
     if "branchId" in fields:
@@ -257,43 +255,6 @@ async def reset_password(user_id: str, data: ResetPasswordRequest, current_user:
 
 @router.delete("/{user_id}")
 async def delete_account(user_id: str, current_user: AdminUser, db: DB):
-    """Soft-delete a staff account. Sets `deleted_at = NOW()` + `is_active = False`,
-    blocking login and hiding the row from /api/accounts. Hard delete is unsafe
-    because users.id is referenced by audit_logs, students, classes, etc. with
-    no cascade — soft-delete keeps historical references intact."""
-    try: u_uuid = uuid.UUID(user_id)
-    except ValueError: raise HTTPException(400, "invalid_id")
-    if u_uuid == current_user.id:
-        raise HTTPException(400, "cannot_delete_self")
-    u = await db.get(User, u_uuid)
-    if not u or u.deleted_at is not None:
-        raise HTTPException(404, "account_not_found")
-    if u.role == RoleName.admin:
-        res = await db.execute(
-            select(func.count()).select_from(User).where(
-                User.role == RoleName.admin,
-                User.is_active == True,
-                User.deleted_at.is_(None),
-                User.id != u.id,
-            )
-        )
-        if (res.scalar_one() or 0) == 0:
-            raise HTTPException(400, "cannot_delete_last_admin")
-    u.deleted_at = datetime.now(timezone.utc)
-    u.is_active = False
-    await log_action(
-        db,
-        user_id=current_user.id,
-        branch_id=current_user.branch_id,
-        user_role=current_user.role.value if hasattr(current_user.role, "value") else str(current_user.role),
-        action="accounts.delete",
-        resource="accounts",
-        resource_id=u.id,
-        old_values={
-            "email": u.email,
-            "name": u.full_name,
-            "role": u.role.value if hasattr(u.role, "value") else str(u.role),
-        },
-    )
-    await db.commit()
-    return {"ok": True, "id": str(u.id)}
+    """Account deletion is disabled. Accounts are deactivated (Vô hiệu hoá) instead
+    to preserve audit trail and prevent abuse of the account threshold."""
+    raise HTTPException(403, "account_deletion_disabled")
